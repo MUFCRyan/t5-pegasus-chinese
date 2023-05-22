@@ -5,11 +5,35 @@ import jieba
 import torch
 import argparse
 import numpy as np
+import pandas as pd
 from tqdm.auto import tqdm
 from bert4torch.models import *
 from torch.utils.data import DataLoader, Dataset
-from torch._six import container_abcs, string_classes, int_classes
+from utils import utils
+
+TORCH_MAJOR = int(torch.__version__.split('.')[0])
+TORCH_MINOR = int(torch.__version__.split('.')[1])
+if TORCH_MAJOR == 1 and TORCH_MINOR < 8:
+    from torch._six import container_abcs
+else:
+    import collections.abc as container_abcs
+
+from torch._six import string_classes
+int_classes = int
 from transformers import MT5ForConditionalGeneration, BertTokenizer
+
+
+def load_short_video_data(file_name, data_type):
+    data = []
+    key_title = utils.get_key_title(data_type)
+    key_summary = 'summary'
+    df = pd.read_csv(file_name, sep='\t', encoding='utf-8')
+    df = df[[key_title, key_summary]]
+    for index, row in df.iterrows():
+        title = row[key_title]
+        summary = row[key_summary]
+        data.append((title, summary))
+    return data
 
 
 def load_data(filename):
@@ -150,10 +174,13 @@ def default_collate(batch):
     raise TypeError(default_collate_err_msg_format.format(elem_type))
 
 
-def prepare_data(args, data_path, tokenizer, term='train'):
+def prepare_data(args, data_path, tokenizer, term='train', data_type=''):
     """准备batch数据
     """
-    data = load_data(data_path)
+    if utils.is_short_video_dataset(data_type):
+        data = load_short_video_data(data_path, data_type)
+    else:
+        data = load_data(data_path)
     data = create_data(data, tokenizer, args.max_len, term)
     data = KeyDataset(data)
     data = DataLoader(data, batch_size=args.batch_size, collate_fn=default_collate)
@@ -250,10 +277,13 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
 
 
+DATA_TYPE = utils.DATA_TYPE_VALID
+
+
 def init_argument():
     parser = argparse.ArgumentParser(description='t5-pegasus-chinese')
-    parser.add_argument('--train_data', default='./data/train.tsv')
-    parser.add_argument('--dev_data', default='./data/dev.tsv')
+    parser.add_argument('--train_data', default=utils.get_train_path(DATA_TYPE))
+    parser.add_argument('--dev_data', default=utils.get_dev_path(DATA_TYPE))
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')
     parser.add_argument('--model_dir', default='./saved_model')
     
@@ -261,7 +291,7 @@ def init_argument():
     parser.add_argument('--batch_size', default=16, help='batch size')
     parser.add_argument('--lr', default=2e-4, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
-    parser.add_argument('--max_len', default=512, help='max length of inputs')
+    parser.add_argument('--max_len', default=utils.get_max_len(DATA_TYPE), help='max length of inputs')
     parser.add_argument('--max_len_generate', default=40, help='max length of outputs')
 
     args = parser.parse_args()
@@ -275,8 +305,8 @@ if __name__ == '__main__':
 
     # step 2. prepare training data and validation data
     tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
-    train_data = prepare_data(args, args.train_data, tokenizer, term='train')
-    dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev')
+    train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE)
+    dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE)
 
     # step 3. load pretrain model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
