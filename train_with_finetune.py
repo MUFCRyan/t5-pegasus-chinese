@@ -6,7 +6,7 @@ import torch
 import argparse
 import numpy as np
 from tqdm.auto import tqdm
-from bert4torch.model import *
+from bert4torch.models import *
 from torch.utils.data import DataLoader, Dataset
 from torch._six import container_abcs, string_classes, int_classes
 from transformers import MT5ForConditionalGeneration, BertTokenizer
@@ -199,24 +199,24 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         
     best = 0
     for epoch in range(args.num_epoch):
-        model.train()
+        model.train()  # 指明当前是训练阶段
         for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
             cur = {k: v.to(device) for k, v in cur.items()}
-            prob = model(**cur)[0]
+            prob = model(**cur)[0]  # 计算当前样本的结果
             mask = cur['decoder_attention_mask'][:, 1:].reshape(-1).bool()
             prob = prob[:, :-1]
             prob = prob.reshape((-1, prob.size(-1)))[mask]
             labels = cur['decoder_input_ids'][:, 1:].reshape(-1)[mask]
             loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(prob, labels)
+            loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
             if i % 100 == 0:
                 print("Iter {}:  Training Loss: {}".format(i, loss.item()))
-            loss.backward()
-            adam.step()
-            adam.zero_grad()
+            loss.backward()  # 开启后向传播
+            adam.step()  # 更新模型参数
+            adam.zero_grad()  # 梯度清零
 
         # 验证
-        model.eval()
+        model.eval()  # 指明当前是验证阶段
         gens = []
         summaries = []
         for feature in tqdm(dev_data):
