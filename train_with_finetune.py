@@ -1,5 +1,7 @@
 import os
 import re
+import time
+
 import rouge
 import jieba
 import torch
@@ -85,8 +87,9 @@ class KeyDataset(Dataset):
 def create_data(data, tokenizer, max_len=512, term='train'):
     """调用tokenizer.encode编码正文/标题，每条样本用dict表示数据域
     """
+    start = time.time_ns() / 1000000
     ret, flag = [], True
-    for title, content in data:
+    for title, content in tqdm(data):
         text_ids = tokenizer.encode(content, max_length=max_len, truncation='only_first')
         if flag and term == 'train':
             flag = False
@@ -106,6 +109,8 @@ def create_data(data, tokenizer, max_len=512, term='train'):
                        }
             
         ret.append(features)
+    spend = time.time_ns() / 1000000 - start
+    print('ZFC create_data term = {}, spend_time = {}'.format(term, spend))
     return ret
 
 
@@ -288,7 +293,7 @@ def init_argument():
     parser.add_argument('--model_dir', default='./saved_model')
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
-    parser.add_argument('--batch_size', default=16, help='batch size')
+    parser.add_argument('--batch_size', default=2, help='batch size')
     parser.add_argument('--lr', default=2e-4, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
     parser.add_argument('--max_len', default=utils.get_max_len(DATA_TYPE), help='max length of inputs')

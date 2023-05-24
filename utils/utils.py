@@ -47,6 +47,6 @@ def is_short_video_dataset(data_type=''):
 
 def get_max_len(data_type=''):
     if is_short_video_dataset(data_type):
-        return 2048
+        return 512
     else:
         return 512
