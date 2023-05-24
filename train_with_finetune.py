@@ -282,21 +282,22 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
 
 
-DATA_TYPE = utils.DATA_TYPE_VALID
+DATA_TYPE = utils.DATA_TYPE_PURE
 
 
 def init_argument():
+    bz, max_len = utils.get_bz_max_len(DATA_TYPE)
     parser = argparse.ArgumentParser(description='t5-pegasus-chinese')
-    parser.add_argument('--train_data', default=utils.get_train_path(DATA_TYPE))
-    parser.add_argument('--dev_data', default=utils.get_dev_path(DATA_TYPE))
+    parser.add_argument('--train_data', default=utils.get_train_path(DATA_TYPE, max_len))
+    parser.add_argument('--dev_data', default=utils.get_dev_path(DATA_TYPE, max_len))
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')
     parser.add_argument('--model_dir', default='./saved_model')
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
-    parser.add_argument('--batch_size', default=2, help='batch size')
+    parser.add_argument('--batch_size', default=bz, help='batch size')
     parser.add_argument('--lr', default=2e-4, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
-    parser.add_argument('--max_len', default=utils.get_max_len(DATA_TYPE), help='max length of inputs')
+    parser.add_argument('--max_len', default=max_len, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=40, help='max length of outputs')
 
     args = parser.parse_args()

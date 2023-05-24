@@ -1,35 +1,30 @@
 KEY_VALID_TITLE = 'valid_title'
 KEY_PURE_TITLE = 'pure_title'
+KEY_PHOTO_ID = 'photo_id'
 KEY_SUMMARY = 'summary'
 
 
-DATA_TYPE_VALID = 'valid'
-DATA_TYPE_PURE = 'pure'
+DATA_TYPE_VALID = KEY_VALID_TITLE
+DATA_TYPE_PURE = KEY_PURE_TITLE
 
 
-def get_train_path(data_type=''):
-    if data_type == DATA_TYPE_VALID:
-        return './dataset/valid_title/train.csv'
-    if data_type == DATA_TYPE_PURE:
-        return './data/pure_title/train.csv'
+def get_train_path(data_type='', max_len=1024):
+    if data_type in [DATA_TYPE_VALID, DATA_TYPE_PURE]:
+        return './dataset/{}/{}/train.csv'.format(data_type, max_len)
     else:
         return './data/train.tsv'
 
 
-def get_dev_path(data_type=''):
-    if data_type == DATA_TYPE_VALID:
-        return './dataset/valid_title/dev.csv'
-    if data_type == DATA_TYPE_PURE:
-        return './data/pure_title/dev.csv'
+def get_dev_path(data_type='', max_len=1024):
+    if data_type in [DATA_TYPE_VALID, DATA_TYPE_PURE]:
+        return './dataset/{}/{}/dev.csv'.format(data_type, max_len)
     else:
         return './data/dev.tsv'
 
 
-def get_test_path(data_type=''):
-    if data_type == DATA_TYPE_VALID:
-        return './dataset/valid_title/test.csv'
-    if data_type == DATA_TYPE_PURE:
-        return './data/pure_title/test.csv'
+def get_test_path(data_type='', max_len=1024):
+    if data_type in [DATA_TYPE_VALID, DATA_TYPE_PURE]:
+        return './dataset/{}/{}/test.csv'.format(data_type, max_len)
     else:
         return './data/test.tsv'
 
@@ -45,8 +40,8 @@ def is_short_video_dataset(data_type=''):
     return data_type in [DATA_TYPE_VALID, DATA_TYPE_PURE]
 
 
-def get_max_len(data_type=''):
+def get_bz_max_len(data_type=''):
     if is_short_video_dataset(data_type):
-        return 512
+        return 2, 1536
     else:
-        return 512
+        return 16, 512
