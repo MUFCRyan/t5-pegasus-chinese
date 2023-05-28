@@ -42,6 +42,6 @@ def is_short_video_dataset(data_type=''):
 
 def get_bz_max_len(data_type=''):
     if is_short_video_dataset(data_type):
-        return 2, 1536
+        return 1, 1024
     else:
         return 16, 512

@@ -275,10 +275,11 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         rouge_l = scores['rouge-l']
         if rouge_l > best:
             best = rouge_l
+            model_name = 'summary_model_{}_{}'.format(args.data_type, args.max_len)
             if args.data_parallel and torch.cuda.is_available():
-                torch.save(model.module, os.path.join(args.model_dir, 'summary_model'))
+                torch.save(model.module, os.path.join(args.model_dir, model_name))
             else:
-                torch.save(model, os.path.join(args.model_dir, 'summary_model'))
+                torch.save(model, os.path.join(args.model_dir, model_name))
         # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
 
 
@@ -298,7 +299,8 @@ def init_argument():
     parser.add_argument('--lr', default=2e-4, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
     parser.add_argument('--max_len', default=max_len, help='max length of inputs')
-    parser.add_argument('--max_len_generate', default=40, help='max length of outputs')
+    parser.add_argument('--max_len_generate', default=64, help='max length of outputs')
+    parser.add_argument('--data_type', default=DATA_TYPE)
 
     args = parser.parse_args()
     return args

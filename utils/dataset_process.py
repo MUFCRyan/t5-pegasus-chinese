@@ -120,11 +120,11 @@ def stat_summary_max_len(key_title, max_len):
 
 if __name__ == '__main__':
     params = [
-        ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1024),
-        ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1536),
-        ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1024),
-        ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1536)
+        # ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1024),
+        ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1660),
+        # ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1024),
+        ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1660)
     ]
     for (file_path, key_title, max_len) in params:
-        # split(file_path, key_title, max_len)
-        stat_summary_max_len(key_title, max_len)
+        split(file_path, key_title, max_len)
+        # stat_summary_max_len(key_title, max_len)
