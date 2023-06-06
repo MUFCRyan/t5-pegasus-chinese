@@ -25,19 +25,6 @@ int_classes = int
 from transformers import MT5ForConditionalGeneration, BertTokenizer
 
 
-def load_short_video_data(file_name, data_type):
-    data = []
-    key_title = utils.get_key_title(data_type)
-    key_summary = 'summary'
-    df = pd.read_csv(file_name, sep='\t', encoding='utf-8')
-    df = df[[key_title, key_summary]]
-    for index, row in df.iterrows():
-        title = row[key_title]
-        summary = row[key_summary]
-        data.append((title, summary))
-    return data
-
-
 def load_data(filename):
     """加载数据
     单条格式：(标题, 正文)
@@ -183,7 +170,7 @@ def prepare_data(args, data_path, tokenizer, term='train', data_type=''):
     """准备batch数据
     """
     if utils.is_short_video_dataset(data_type):
-        data = load_short_video_data(data_path, data_type)
+        data = utils.load_short_video_data(data_path, data_type)
     else:
         data = load_data(data_path)
     data = create_data(data, tokenizer, args.max_len, term)

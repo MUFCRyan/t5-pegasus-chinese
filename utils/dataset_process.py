@@ -77,17 +77,19 @@ def split(file_path, key_title, max_len):
     full_data = []
     key_photo_id = utils.KEY_PHOTO_ID
     key_summary = utils.KEY_SUMMARY
+    key_is_mmu = 'is_mmu'
     train_ratio, dev_ratio = 0.8, 0.1
     df = pd.read_csv(file_path, sep='\t', encoding='utf-8')
     keys = df.keys()
     print('ZFC df keys = {}'.format(keys))
-    df = df[[key_photo_id, key_title, key_summary]]
+    df = df[[key_photo_id, key_is_mmu, key_title, key_summary]]
     for index, row in df.iterrows():
         photo_id = row[key_photo_id]
         title = row[key_title]
         summary = row[key_summary]
         summary = rectify_summary_by_max_len(summary, max_len)
-        full_data.append((photo_id, title, summary))
+        is_mmu = row[key_is_mmu]
+        full_data.append((photo_id, is_mmu, title, summary))
         print('ZFC split index = {}, photo_id = {}, title = {}, summary = {}'.format(index, photo_id, title, summary))
     full_len = len(full_data)
     random.shuffle(full_data)
@@ -97,7 +99,7 @@ def split(file_path, key_title, max_len):
     dev_data = full_data[train_len: dev_len]
     test_data = full_data[dev_len:]
     all_data = [(train_data, 'train'), (dev_data, 'dev'), (test_data, 'test')]
-    headers = [key_photo_id, key_title, key_summary]
+    headers = [key_photo_id, key_is_mmu, key_title, key_summary]
     for (data, file_name) in all_data:
         save_data(save_dir, headers, data, file_name)
 
@@ -120,10 +122,7 @@ def stat_summary_max_len(key_title, max_len):
 
 if __name__ == '__main__':
     params = [
-        # ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1024),
-        ('../resources/t5_pegasus_dataset.csv', utils.KEY_VALID_TITLE, 1660),
-        # ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1024),
-        ('../resources/t5_pegasus_dataset_pure.csv', utils.KEY_PURE_TITLE, 1660)
+        ('../resources/dataset.csv', utils.KEY_TITLE, 1536)
     ]
     for (file_path, key_title, max_len) in params:
         split(file_path, key_title, max_len)

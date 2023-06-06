@@ -1,8 +1,19 @@
 from transformers import MT5ForConditionalGeneration
 import jieba
 from transformers import BertTokenizer, BatchEncoding
-from torch._six import container_abcs, string_classes, int_classes
 import torch
+
+from utils import utils
+
+TORCH_MAJOR = int(torch.__version__.split('.')[0])
+TORCH_MINOR = int(torch.__version__.split('.')[1])
+if TORCH_MAJOR == 1 and TORCH_MINOR < 8:
+    from torch._six import container_abcs
+else:
+    import collections.abc as container_abcs
+
+from torch._six import string_classes
+int_classes = int
 from torch.utils.data import DataLoader, Dataset
 import re
 import os
@@ -157,11 +168,15 @@ def default_collate(batch):
     raise TypeError(default_collate_err_msg_format.format(elem_type))
     
 
-def prepare_data(args, tokenizer):
+def prepare_data(args, tokenizer, data_type=''):
     """准备batch数据
     """
-    test_data = load_data(args.test_data)
-    test_data = create_data(test_data, tokenizer, args.max_len)
+    data_path = args.test_data
+    if utils.is_short_video_dataset(data_type):
+        test_data = utils.load_short_video_data(data_path, data_type, False)
+    else:
+        test_data = load_data(data_path)
+    test_data = create_data(test_data, tokenizer, int(args.max_len))
     test_data = KeyDataset(test_data)
     test_data = DataLoader(test_data, batch_size=args.batch_size, collate_fn=default_collate)
     return test_data
@@ -263,7 +278,7 @@ if __name__ == '__main__':
 
     # step 2. prepare test data
     tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
-    test_data = prepare_data(args, tokenizer)
+    test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE)
     
     # step 3. load finetuned model
     model = torch.load(args.model, map_location=device)
