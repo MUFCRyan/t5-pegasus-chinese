@@ -268,6 +268,10 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
             else:
                 torch.save(model, os.path.join(args.model_dir, model_name))
         # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
+        if epoch % 4 == 0:
+            utils.send_wechat_msg('train_with_finetune', 'epoch = {}, rouge_l = '.format(epoch, rouge_l))
+    utils.send_wechat_msg('train_with_finetune', 'train_model finished')
+    utils.check_shutdown()
 
 
 DATA_TYPE = utils.DATA_TYPE_PURE
@@ -294,23 +298,29 @@ def init_argument():
 
 
 if __name__ == '__main__':
+    try:
+        # step 1. init argument
+        args = init_argument()
 
-    # step 1. init argument
-    args = init_argument()
+        # step 2. prepare training data and validation data
+        tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE)
+        dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE)
 
-    # step 2. prepare training data and validation data
-    tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
-    train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE)
-    dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE)
+        # step 3. load pretrain model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = MT5ForConditionalGeneration \
+                    .from_pretrained(args.pretrain_model).to(device)
+        if args.data_parallel and torch.cuda.is_available():
+            device_ids = range(torch.cuda.device_count())
+            model = torch.nn.DataParallel(model, device_ids=device_ids)
 
-    # step 3. load pretrain model
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = MT5ForConditionalGeneration \
-                .from_pretrained(args.pretrain_model).to(device)
-    if args.data_parallel and torch.cuda.is_available():
-        device_ids = range(torch.cuda.device_count())
-        model = torch.nn.DataParallel(model, device_ids=device_ids)
-    
-    # step 4. finetune
-    adam = torch.optim.Adam(model.parameters(), lr=args.lr)
-    train_model(model, adam, train_data, dev_data, tokenizer, device, args)
+        # step 4. finetune
+        adam = torch.optim.Adam(model.parameters(), lr=args.lr)
+        train_model(model, adam, train_data, dev_data, tokenizer, device, args)
+    except Exception as e:
+        name = 'train_with_finetune'
+        msg = 'exception: {}'.format(str(e))
+        utils.send_wechat_msg(name, msg)
+        utils.check_shutdown()
+

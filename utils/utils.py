@@ -1,4 +1,8 @@
+import os
+import platform
+
 import pandas as pd
+import requests
 
 KEY_VALID_TITLE = 'valid_title'
 KEY_TITLE = 'title'
@@ -63,3 +67,31 @@ def load_short_video_data(file_name, data_type, need_title=True):
         else:
             data.append(summary)
     return data
+
+
+def is_linux():
+    return platform.system().lower() == 'linux'
+
+
+def check_shutdown():
+    if is_linux():
+        os.system("/usr/bin/shutdown")
+
+
+_TOKEN = 'eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjE0MzAyMSwidXVpZCI6IjgyNTY3ZjBmLWJmYzUtNDhhNS1iNGUxLWMzNGEzODlmMTAwOCIsImlzX2FkbWluIjpmYWxzZSwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.qYYNIo8gkliLAsssn-CW5Qwors91mQTrP4-nrWHrzxBT7JVifhuKKP9C_ZnbPQqDfACnpBsjybHjmbmF-YkIkg'
+headers = {"Authorization": _TOKEN}
+
+
+def send_wechat_msg(name, msg):
+    if not is_linux():
+        return
+    text = name + ' ' + msg
+    resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+                         json={
+                             "title": "t5-pegasus-chinese",
+                             "name": text
+                         }, headers=headers)
+    print(resp.content.decode())
+
+
+send_wechat_msg('Test', '测试微信消息发送')
