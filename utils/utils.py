@@ -3,6 +3,7 @@ import platform
 
 import pandas as pd
 import requests
+import matplotlib.pyplot as plt
 
 KEY_VALID_TITLE = 'valid_title'
 KEY_TITLE = 'title'
@@ -67,6 +68,24 @@ def load_short_video_data(file_name, data_type, need_title=True):
         else:
             data.append(summary)
     return data
+
+
+def draw_loss_curve(epoch_losses):
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(epoch_losses, 'b', label='loss')  # epoch_losses 传入模型训练中的 loss[]列表,在训练过程中，先创建loss列表，将每一个epoch的loss 加进这个列表
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig("./1_recon_loss.jpg")  # 保存图片 路径：/imgPath/
+
+
+def save_msg_to_local(msg, file_path):
+    mode = 'w+'
+    if os.path.exists(file_path):
+        mode = 'r+'
+    with open(file_path, mode) as f:
+        f.write(msg)
 
 
 def is_linux():

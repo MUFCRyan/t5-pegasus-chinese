@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -217,8 +218,11 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
         os.mkdir(args.model_dir)
         
     best = 0
-    for epoch in range(args.num_epoch):
+    total_loss = {}
+    epoch_loss = []
+    for epoch in range(int(args.num_epoch)):
         model.train()  # 指明当前是训练阶段
+        accu_train_loss = []
         for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
             cur = {k: v.to(device) for k, v in cur.items()}
             prob = model(**cur)[0]  # 计算当前样本的结果
@@ -228,11 +232,15 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
             labels = cur['decoder_input_ids'][:, 1:].reshape(-1)[mask]
             loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
+            accu_train_loss.append(loss.detach().cpu().item())
             if i % 100 == 0:
                 print("Iter {}:  Training Loss: {}".format(i, loss.item()))
             loss.backward()  # 开启后向传播
             adam.step()  # 更新模型参数
             adam.zero_grad()  # 梯度清零
+        accu_train_loss = accu_train_loss
+        avg_train_loss = sum(accu_train_loss) / len(accu_train_loss)
+        epoch_loss.append(avg_train_loss)
 
         # 验证
         model.eval()  # 指明当前是验证阶段
@@ -268,8 +276,16 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
             else:
                 torch.save(model, os.path.join(args.model_dir, model_name))
         # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
+        total_loss[epoch] = {
+            'avg_train_loss': avg_train_loss,
+            'accu_train_loss': accu_train_loss,
+            'scores': scores,
+            'rouge_l': rouge_l
+        }
         if epoch % 4 == 0:
             utils.send_wechat_msg('train_with_finetune', 'epoch = {}, rouge_l = '.format(epoch, rouge_l))
+    utils.draw_loss_curve(epoch_loss)
+    utils.save_msg_to_local(json.dumps(total_loss), 'TrainLossScore.txt')
     utils.send_wechat_msg('train_with_finetune', 'train_model finished')
     utils.check_shutdown()
 
@@ -287,7 +303,7 @@ def init_argument():
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
     parser.add_argument('--batch_size', default=bz, help='batch size')
-    parser.add_argument('--lr', default=2e-4, help='learning rate')
+    parser.add_argument('--lr', default=4e-5, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
     parser.add_argument('--max_len', default=max_len, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=64, help='max length of outputs')
@@ -321,6 +337,8 @@ if __name__ == '__main__':
     except Exception as e:
         name = 'train_with_finetune'
         msg = 'exception: {}'.format(str(e))
+        print(name + ' ' + msg)
+        utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
         utils.send_wechat_msg(name, msg)
         utils.check_shutdown()
 
