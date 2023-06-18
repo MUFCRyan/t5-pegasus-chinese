@@ -320,13 +320,16 @@ if __name__ == '__main__':
 
         # step 2. prepare training data and validation data
         tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
+        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+
         train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE)
         dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE)
 
         # step 3. load pretrain model
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = MT5ForConditionalGeneration \
-                    .from_pretrained(args.pretrain_model).to(device)
+        model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+        model.resize_token_embeddings(len(tokenizer))
         if args.data_parallel and torch.cuda.is_available():
             device_ids = range(torch.cuda.device_count())
             model = torch.nn.DataParallel(model, device_ids=device_ids)

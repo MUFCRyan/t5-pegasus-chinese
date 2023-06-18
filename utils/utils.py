@@ -113,4 +113,4 @@ def send_wechat_msg(name, msg):
     print(resp.content.decode())
 
 
-send_wechat_msg('Test', '测试微信消息发送')
+# send_wechat_msg('Test', '测试微信消息发送')
