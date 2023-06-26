@@ -1,3 +1,6 @@
+import time
+
+from tqdm import tqdm
 from transformers import MT5ForConditionalGeneration
 import jieba
 from transformers import BertTokenizer, BatchEncoding
@@ -19,7 +22,6 @@ import re
 import os
 import csv
 import argparse
-from tqdm.auto import tqdm
 from multiprocessing import Pool, Process
 import pandas as pd
 import numpy as np
@@ -80,10 +82,10 @@ class KeyDataset(Dataset):
 def create_data(data, tokenizer, max_len):
     """调用tokenizer.encode编码正文/标题，每条样本用dict表示数据域
     """
-    ret, flag, title = [], True, None
+    ret, flag, title, photo_id = [], True, None, None
     for content in data:
         if type(content) == tuple:
-            title, content = content
+            photo_id, title, content = content
         text_ids = tokenizer.encode(content, max_length=max_len,
                                     truncation='only_first')
 
@@ -96,7 +98,40 @@ def create_data(data, tokenizer, max_len):
                     'raw_data': content}
         if title:
             features['title'] = title
+        if photo_id:
+            features[utils.KEY_PHOTO_ID] = str(photo_id)
         ret.append(features)
+    return ret
+
+
+def create_extract_data(data, tokenizer, max_len=512, term='train'):
+    """调用tokenizer.encode编码正文/标题，每条样本用dict表示数据域
+    """
+    start = time.time_ns() / 1000000
+    ret, flag = [], True
+    for pid, title, content in tqdm(data):
+        text_ids = tokenizer.encode(content, max_length=max_len, truncation='only_first')
+        if flag and term == 'train':
+            flag = False
+            print(content)
+        if term == 'train':
+            summary_ids = tokenizer.encode(title, max_length=max_len, truncation='only_first')
+            features = {'input_ids': text_ids,
+                        'decoder_input_ids': summary_ids,
+                        'attention_mask': [1] * len(text_ids),
+                        'decoder_attention_mask': [1] * len(summary_ids),
+                        utils.KEY_PHOTO_ID: str(pid)
+                        }
+
+        elif term == 'dev':
+            features = {'input_ids': text_ids,
+                        'attention_mask': [1] * len(text_ids),
+                        'title': title
+                        }
+
+        ret.append(features)
+    spend = time.time_ns() / 1000000 - start
+    print('ZFC create_data term = {}, spend_time = {}'.format(term, spend))
     return ret
 
 
@@ -171,14 +206,24 @@ def default_collate(batch):
 def prepare_data(args, tokenizer, data_type=''):
     """准备batch数据
     """
-    data_path = args.test_data
+    is_extract = args.extract
+    if args.extract:
+        data_path = utils.PREDICT_DIR + utils.FILE_SPLIT_SYMBOL + args.mode + utils.SUFFIX_CSV
+    else:
+        data_path = args.test_data
+
     if utils.is_short_video_dataset(data_type):
-        test_data = utils.load_short_video_data(data_path, data_type, False)
+        test_data = utils.load_short_video_data(data_path, data_type, True, True)
     else:
         test_data = load_data(data_path)
-    test_data = create_data(test_data, tokenizer, int(args.max_len))
+
+    if is_extract:
+        test_data = create_extract_data(test_data, tokenizer, int(args.max_len))
+    else:
+        test_data = create_data(test_data, tokenizer, int(args.max_len))
+
     test_data = KeyDataset(test_data)
-    test_data = DataLoader(test_data, batch_size=args.batch_size, collate_fn=default_collate)
+    test_data = DataLoader(test_data, batch_size=args.batch_size, collate_fn=default_collate, shuffle=False)
     return test_data
 
 
@@ -216,21 +261,28 @@ def compute_rouges(sources, targets):
     return {k: v / len(targets) for k, v in scores.items()}
 
 
-def generate(test_data, model, tokenizer, args):
+def generate_summary(test_data, model, tokenizer, args):
     gens, summaries = [], []
-    with open(args.result_file, 'w', encoding='utf-8', newline='') as f:
+    mode = args.mode
+    predict_dir = utils.PREDICT_DIR
+    utils.check_mkdirs(predict_dir)
+    predict_file = predict_dir + utils.FILE_SPLIT_SYMBOL + mode + utils.SUFFIX_CSV
+    with open(predict_file, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter='\t')
+        writer.writerow((utils.KEY_PHOTO_ID, utils.KEY_TITLE, utils.KEY_SUMMARY))
         model.eval()
         for feature in tqdm(test_data):
             raw_data = feature['raw_data']
-            content = {k : v for k, v in feature.items() if k not in ['raw_data', 'title']} 
+            photo_ids = feature[utils.KEY_PHOTO_ID]
+            photo_ids = {int(pid) for pid in photo_ids}
+            content = {k: v for k, v in feature.items() if k not in ['raw_data', 'title', utils.KEY_PHOTO_ID]}
             gen = model.generate(max_length=args.max_len_generate,
-                                eos_token_id=tokenizer.sep_token_id,
-                                decoder_start_token_id=tokenizer.cls_token_id,
-                                **content)
+                                 eos_token_id=tokenizer.sep_token_id,
+                                 decoder_start_token_id=tokenizer.cls_token_id,
+                                 **content)
             gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
             gen = [item.replace(' ', '') for item in gen]
-            writer.writerows(zip(gen, raw_data))
+            writer.writerows(zip(photo_ids, gen, raw_data))
             gens.extend(gen)
             if 'title' in feature:
                 summaries.extend(feature['title'])
@@ -238,6 +290,20 @@ def generate(test_data, model, tokenizer, args):
         scores = compute_rouges(gens, summaries)
         print(scores)
     print('Done!')
+
+
+def extract(test_data, model, mode, feat_type):
+    with torch.no_grad():
+        model.eval()
+        save_dir = utils.SAVE_PATH_FEATURES + utils.FILE_SPLIT_SYMBOL + feat_type
+        utils.check_mkdirs(save_dir)
+        for index, (photo_id, feature) in enumerate(tqdm(test_data)):
+            content = {k: v.to(device) for k, v in feature.items()}
+            result = model(**content)
+            last_hidden_state = result.encoder_last_hidden_state.cpu()
+            hidden_state = last_hidden_state.half()
+            feature_list = [(photo_id, hidden_state)]
+            utils.save_features(save_dir, mode, feature_list, False)
 
 
 def generate_multiprocess(feature):
@@ -258,17 +324,50 @@ def generate_multiprocess(feature):
 def init_argument():
     parser = argparse.ArgumentParser(description='t5-pegasus-chinese')
     parser.add_argument('--test_data', default='./data/predict.tsv')
-    parser.add_argument('--result_file', default='./data/predict_result.tsv')
+    parser.add_argument('--result_file', default='./data/predict_result.csv')
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')    
-    parser.add_argument('--model', default='./saved_model/summary_model')
+    parser.add_argument('--model', default='./saved_model/remote_summary_model')
 
-    parser.add_argument('--batch_size', default=16, help='batch size')
+    parser.add_argument('--batch_size', default=1, help='batch size')
     parser.add_argument('--max_len', default=512, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=40, help='max length of generated text')
     parser.add_argument('--use_multiprocess', default=False, action='store_true')
+    parser.add_argument('--extract', type=bool, default=False, help='if use extract text features')
+    parser.add_argument('--mode', default='temp')
 
     args = parser.parse_args()
     return args
+
+
+def filter_data(test_data, feat_type):
+    data_list = []
+    for feature in tqdm(test_data, desc='filter_data, feat_type = {}'.format(feat_type)):
+        photo_id_list = feature[utils.KEY_PHOTO_ID]
+        input_id_list = torch.unbind(feature['input_ids'], dim=0)
+        attention_mask_list = torch.unbind(feature['attention_mask'], dim=0)
+        decoder_input_id_list = torch.unbind(feature['decoder_input_ids'], dim=0)
+        decoder_attention_mask_list = torch.unbind(feature['decoder_attention_mask'], dim=0)
+        data_len = len(input_id_list)
+        for index in range(data_len):
+            photo_id = photo_id_list[index]
+            if feat_type == utils.FEATURE_TYPE_SUMMARY:
+                input_ids = input_id_list[index]
+                attention_mask = attention_mask_list[index]
+                decoder_input_ids = decoder_input_id_list[index]
+                decoder_attention_mask = decoder_attention_mask_list[index]
+            else:
+                input_ids = decoder_input_id_list[index]
+                attention_mask = decoder_attention_mask_list[index]
+                decoder_input_ids = input_id_list[index]
+                decoder_attention_mask = attention_mask_list[index]
+            data_list.append((photo_id, {
+                'input_ids': input_ids.unsqueeze(0),
+                'decoder_input_ids': decoder_input_ids.unsqueeze(0),
+                'attention_mask': attention_mask.unsqueeze(0),
+                'decoder_attention_mask': decoder_attention_mask.unsqueeze(0)
+            }))
+    return data_list
+
 
 
 if __name__ == '__main__':
@@ -278,22 +377,31 @@ if __name__ == '__main__':
 
     # step 2. prepare test data
     tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+    special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
+    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
     test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE)
     
     # step 3. load finetuned model
     model = torch.load(args.model, map_location=device)
+    model.resize_token_embeddings(len(tokenizer))
 
-    # step 4. predict
-    res = []
-    if args.use_multiprocess and device == 'cpu':
-        print('Parent process %s.' % os.getpid())
-        p = Pool(2)
-        res = p.map_async(generate_multiprocess, test_data, chunksize=2).get()
-        print('Waiting for all subprocesses done...')
-        p.close()
-        p.join()
-        res = pd.DataFrame([item for batch in res for item in batch])
-        res.to_csv(args.result_file, index=False, header=False, encoding='utf-8')
-        print('Done!')
+    if args.extract:
+        curr_data = filter_data(test_data, utils.FEATURE_TYPE_SUMMARY)
+        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_SUMMARY)
+        curr_data = filter_data(test_data, utils.FEATURE_TYPE_CONTENT)
+        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_CONTENT)
     else:
-        generate(test_data, model, tokenizer, args)
+        # step 4. predict
+        res = []
+        if args.use_multiprocess and device == 'cpu':
+            print('Parent process %s.' % os.getpid())
+            p = Pool(2)
+            res = p.map_async(generate_multiprocess, test_data, chunksize=2).get()
+            print('Waiting for all subprocesses done...')
+            p.close()
+            p.join()
+            res = pd.DataFrame([item for batch in res for item in batch])
+            res.to_csv(args.result_file, index=False, header=False, encoding='utf-8')
+            print('Done!')
+        else:
+            generate_summary(test_data, model, tokenizer, args)

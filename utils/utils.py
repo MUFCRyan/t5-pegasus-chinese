@@ -1,9 +1,24 @@
 import os
+import pickle
 import platform
 
 import pandas as pd
 import requests
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+KEY_IS_MMU = 'is_mmu'
+KEY_PHOTO_ID = "photo_id"
+_ROOT_DIR = 'E:'
+if platform.system().lower() == 'linux':
+    _ROOT_DIR = ''
+SAVE_PATH_FEATURES = _ROOT_DIR + '/Dataset/NLP/ShortVideo/Kuaishou/features/text'
+
+FILE_SPLIT_SYMBOL = '/'
+
+
+PREDICT_DIR = './data/predict'
+
 
 KEY_VALID_TITLE = 'valid_title'
 KEY_TITLE = 'title'
@@ -11,8 +26,21 @@ KEY_PHOTO_ID = 'photo_id'
 KEY_SUMMARY = 'summary'
 
 
+SUFFIX_PKL = ".pkl"
+SUFFIX_CSV = ".csv"
+
+
 DATA_TYPE_VALID = KEY_VALID_TITLE
 DATA_TYPE_PURE = KEY_TITLE
+
+
+FEATURE_TYPE_SUMMARY = 'summary'
+FEATURE_TYPE_CONTENT = 'content'
+
+
+def check_mkdirs(dir_path):
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
 
 
 def get_train_path(data_type='', max_len=1024):
@@ -54,19 +82,27 @@ def get_bz_max_len(data_type=''):
         return 16, 512
 
 
-def load_short_video_data(file_name, data_type, need_title=True):
+def load_short_video_data(file_name, data_type, need_title=True, need_pid=False):
     data = []
+    key_photo_id = KEY_PHOTO_ID
     key_title = get_key_title(data_type)
-    key_summary = 'summary'
+    key_summary = KEY_SUMMARY
     df = pd.read_csv(file_name, sep='\t', encoding='utf-8')
-    df = df[[key_title, key_summary]]
+    df = df[[key_photo_id, key_title, key_summary]]
     for index, row in df.iterrows():
+        photo_id = row[key_photo_id]
         summary = row[key_summary]
         if need_title:
             title = row[key_title]
-            data.append((title, summary))
+            if need_pid:
+                data.append((photo_id, title, summary))
+            else:
+                data.append((title, summary))
         else:
-            data.append(summary)
+            if need_pid:
+                data.append((photo_id, summary))
+            else:
+                data.append(summary)
     return data
 
 
@@ -90,6 +126,22 @@ def save_msg_to_local(msg, file_path):
 
 def is_linux():
     return platform.system().lower() == 'linux'
+
+
+def save_by_pickle(root_dir, photo_id, feature, suffix):
+    file_path = root_dir + FILE_SPLIT_SYMBOL + str(photo_id) + suffix
+    pickle.dump(feature, file=open(file_path, 'wb+'))
+
+
+def save_features(save_dir, data_type, feature_list, print_info=True):
+    if not data_type.startswith(FILE_SPLIT_SYMBOL):
+        data_type = FILE_SPLIT_SYMBOL + data_type
+    save_dir += data_type
+    check_mkdirs(save_dir)
+    for (photo_id, feature) in tqdm(feature_list):
+        save_by_pickle(save_dir, photo_id, feature, SUFFIX_PKL)
+    if print_info:
+        print('ZFC save_features save_dir = {} succeed!'.format(save_dir))
 
 
 def check_shutdown():
