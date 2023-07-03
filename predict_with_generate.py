@@ -300,7 +300,7 @@ def extract(test_data, model, mode, feat_type):
         for index, (photo_id, feature) in enumerate(tqdm(test_data)):
             content = {k: v.to(device) for k, v in feature.items()}
             result = model(**content)
-            last_hidden_state = result.encoder_last_hidden_state.cpu()
+            last_hidden_state = result.encoder_last_hidden_state.cpu().squeeze(0)
             hidden_state = last_hidden_state.half()
             feature_list = [(photo_id, hidden_state)]
             utils.save_features(save_dir, mode, feature_list, False)
@@ -350,7 +350,7 @@ def filter_data(test_data, feat_type):
         data_len = len(input_id_list)
         for index in range(data_len):
             photo_id = photo_id_list[index]
-            if feat_type == utils.FEATURE_TYPE_SUMMARY:
+            if feat_type == utils.FEATURE_TYPE_CONTENT:
                 input_ids = input_id_list[index]
                 attention_mask = attention_mask_list[index]
                 decoder_input_ids = decoder_input_id_list[index]
