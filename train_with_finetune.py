@@ -9,9 +9,12 @@ import torch
 import argparse
 import numpy as np
 import pandas as pd
+from torch import optim
 from tqdm.auto import tqdm
 from bert4torch.models import *
 from torch.utils.data import DataLoader, Dataset
+
+from eval.score import calc_scores
 from utils import utils
 
 TORCH_MAJOR = int(torch.__version__.split('.')[0])
@@ -23,7 +26,8 @@ else:
 
 from torch._six import string_classes
 int_classes = int
-from transformers import MT5ForConditionalGeneration, BertTokenizer
+from transformers import MT5ForConditionalGeneration, BertTokenizer, T5ForConditionalGeneration, AutoTokenizer, \
+    AutoModelForSeq2SeqLM
 
 
 def load_data(filename):
@@ -213,34 +217,60 @@ def compute_rouges(sources, targets):
     return {k: v / len(targets) for k, v in scores.items()}
 
 
-def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
+def train_model(model, optimizer, train_data, dev_data, tokenizer, device, args):
     if not os.path.exists(args.model_dir):
         os.mkdir(args.model_dir)
         
-    best = 0
+    best_rouge_l = 0
+    best_cider = 0
     total_loss = {}
     epoch_loss = []
-    for epoch in range(int(args.num_epoch)):
+    total_epoch = int(args.num_epoch)
+    save_epoch_interval = int(args.save_epoch_interval)
+    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epoch, eta_min=0, last_epoch=-1)
+    for epoch in range(total_epoch):
         model.train()  # 指明当前是训练阶段
         accu_train_loss = []
+        mini_train_loss = []
+        optimizer_lrs = []
+        scheduler_lrs = []
         for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
             cur = {k: v.to(device) for k, v in cur.items()}
             prob = model(**cur)[0]  # 计算当前样本的结果
-            mask = cur['decoder_attention_mask'][:, 1:].reshape(-1).bool()
+            mask = cur['decoder_attention_mask']
+            mask = mask[:, 1:]
+            mask = mask.reshape(-1)
+            mask = mask.bool()
             prob = prob[:, :-1]
-            prob = prob.reshape((-1, prob.size(-1)))[mask]
-            labels = cur['decoder_input_ids'][:, 1:].reshape(-1)[mask]
+            prob = prob.reshape((-1, prob.size(-1)))
+            prob = prob[mask]
+            labels = cur['decoder_input_ids']
+            labels = labels[:, 1:]
+            labels = labels.reshape(-1)
+            labels = labels[mask]
             loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
             accu_train_loss.append(loss.detach().cpu().item())
+            loss_value = loss.detach().cpu().item()
+            if loss_value <= 10:
+                mini_train_loss.append(loss_value)
+            else:
+                mini_train_loss.append(10)
             if i % 100 == 0:
                 print("Iter {}:  Training Loss: {}".format(i, loss.item()))
+                utils.draw_train_loss_curve(mini_train_loss, epoch)
+                utils.draw_optimizer_lr_curve(optimizer_lrs, epoch)
+                utils.draw_scheduler_lr_curve(scheduler_lrs, epoch)
+            optimizer_lrs.append(optimizer.state_dict()['param_groups'][0]['lr'])
+            scheduler_lrs.append(lr_scheduler.get_last_lr())
             loss.backward()  # 开启后向传播
-            adam.step()  # 更新模型参数
-            adam.zero_grad()  # 梯度清零
+            optimizer.step()  # 更新模型参数
+            optimizer.zero_grad()  # 梯度清零
         accu_train_loss = accu_train_loss
         avg_train_loss = sum(accu_train_loss) / len(accu_train_loss)
         epoch_loss.append(avg_train_loss)
+
+        lr_scheduler.step()
 
         # 验证
         model.eval()  # 指明当前是验证阶段
@@ -265,26 +295,60 @@ def train_model(model, adam, train_data, dev_data, tokenizer, device, args):
             # print(gen)
             gens.extend(gen)
             summaries.extend(title)
-        scores = compute_rouges(gens, summaries)
+        scores = calc_scores(gens, summaries)
+        utils.draw_score_curve(scores)
+        cider = scores['CIDEr'].item()
         print("Validation Loss: {}".format(scores))
         rouge_l = scores['rouge-l']
-        if rouge_l > best:
-            best = rouge_l
-            model_name = 'summary_model_{}_{}'.format(args.data_type, args.max_len)
+        model_name = 'best_summary_model'
+        if rouge_l > best_rouge_l:
+            best_rouge_l = rouge_l
+            save_name = model_name + '_rouge_l'
             if args.data_parallel and torch.cuda.is_available():
-                torch.save(model.module, os.path.join(args.model_dir, model_name))
+                torch.save(model.module, os.path.join(args.model_dir, save_name))
             else:
-                torch.save(model, os.path.join(args.model_dir, model_name))
-        # torch.save(model, os.path.join(args.model_dir, 'summary_model_epoch_{}'.format(str(epoch))))
+                torch.save(model, os.path.join(args.model_dir, save_name))
+            total_loss['best_rouge_l'] = {
+                'avg_train_loss': avg_train_loss,
+                'accu_train_loss': accu_train_loss,
+                'scores': scores,
+                'rouge_l': rouge_l,
+                'epoch': epoch
+            }
+
+        if cider > best_cider:
+            best_cider = cider
+            save_name = model_name + '_cider'
+            if args.data_parallel and torch.cuda.is_available():
+                torch.save(model.module, os.path.join(args.model_dir, save_name))
+            else:
+                torch.save(model, os.path.join(args.model_dir, save_name))
+            total_loss['best_cider'] = {
+                'avg_train_loss': avg_train_loss,
+                'accu_train_loss': accu_train_loss,
+                'scores': scores,
+                'cider': cider,
+                'epoch': epoch
+            }
+
         total_loss[epoch] = {
             'avg_train_loss': avg_train_loss,
             'accu_train_loss': accu_train_loss,
             'scores': scores,
-            'rouge_l': rouge_l
+            'rouge_l': rouge_l,
+            'cider': cider
         }
+        epoch_plus = epoch + 1
+        if epoch_plus % save_epoch_interval == 0 or epoch_plus == total_epoch:
+            utils.check_mkdirs('./checkpoint')
+            torch.save(model, './checkpoint/{}_{}'.format(model_name, str(epoch)))
+            utils.send_wechat_msg('train_with_finetune save_model', 'epoch = {}, rouge_l = {}, cider = {}'
+                                  .format(epoch, rouge_l, cider))
+
         if epoch % 4 == 0:
-            utils.send_wechat_msg('train_with_finetune', 'epoch = {}, rouge_l = '.format(epoch, rouge_l))
-    utils.draw_loss_curve(epoch_loss)
+            utils.send_wechat_msg('train_with_finetune', 'epoch = {}, rouge_l = {}, cider = {}'
+                                  .format(epoch, rouge_l, cider))
+    utils.draw_epoch_loss_curve(epoch_loss)
     utils.save_msg_to_local(json.dumps(total_loss), 'TrainLossScore.txt')
     utils.send_wechat_msg('train_with_finetune', 'train_model finished')
     utils.check_shutdown()
@@ -296,8 +360,8 @@ DATA_TYPE = utils.DATA_TYPE_PURE
 def init_argument():
     bz, max_len = utils.get_bz_max_len(DATA_TYPE)
     parser = argparse.ArgumentParser(description='t5-pegasus-chinese')
-    parser.add_argument('--train_data', default=utils.get_train_path(DATA_TYPE, max_len))
-    parser.add_argument('--dev_data', default=utils.get_dev_path(DATA_TYPE, max_len))
+    parser.add_argument('--train_data', default='./dataset/short_video/train.csv')
+    parser.add_argument('--dev_data', default='./dataset/short_video/dev.csv')
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')
     parser.add_argument('--model_dir', default='./saved_model')
     
@@ -308,6 +372,8 @@ def init_argument():
     parser.add_argument('--max_len', default=max_len, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=64, help='max length of outputs')
     parser.add_argument('--data_type', default=DATA_TYPE)
+    parser.add_argument('--model_type', default='mt5')
+    parser.add_argument('--save_epoch_interval', type=int, default=9)
 
     args = parser.parse_args()
     return args
@@ -317,9 +383,13 @@ if __name__ == '__main__':
     try:
         # step 1. init argument
         args = init_argument()
+        is_mt5 = args.model_type == 'mt5'
 
         # step 2. prepare training data and validation data
-        tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        if is_mt5:
+            tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
         special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
         num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 
@@ -328,7 +398,10 @@ if __name__ == '__main__':
 
         # step 3. load pretrain model
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+        if is_mt5:
+            model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+        else:
+            model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
         model.resize_token_embeddings(len(tokenizer))
         if args.data_parallel and torch.cuda.is_available():
             device_ids = range(torch.cuda.device_count())

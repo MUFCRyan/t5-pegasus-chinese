@@ -106,6 +106,81 @@ def load_short_video_data(file_name, data_type, need_title=True, need_pid=False)
     return data
 
 
+def draw_epoch_loss_curve(losses):
+    save_dir = './curve/epoch_loss'
+    check_mkdirs(save_dir)
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(losses, 'b', label='loss')  # epoch_losses 传入模型训练中的 loss[]列表,在训练过程中，先创建loss列表，将每一个epoch的loss 加进这个列表
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig(save_dir + "/epoch_loss.jpg")
+
+
+def draw_train_loss_curve(losses, epoch):
+    save_dir = './curve/train_loss'
+    check_mkdirs(save_dir)
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(losses, 'b', label='loss')
+    plt.ylabel('loss')
+    plt.xlabel('iter_num')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig(save_dir + "/train_loss_epoch_{}.jpg".format(epoch))
+
+
+def draw_optimizer_lr_curve(lrs, epoch):
+    save_dir = './curve/optimizer_lr'
+    check_mkdirs(save_dir)
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(lrs, 'b', label='lr')
+    plt.ylabel('lr')
+    plt.xlabel('iter_num')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig(save_dir + "/lr_epoch_{}.jpg".format(epoch))
+
+
+def draw_scheduler_lr_curve(lrs, epoch):
+    save_dir = './curve/scheduler_lr'
+    check_mkdirs(save_dir)
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(lrs, 'b', label='lr')
+    plt.ylabel('lr')
+    plt.xlabel('iter_num')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig(save_dir + "/lr_epoch_{}.jpg".format(epoch))
+
+
+def real_draw_score_curve(scores, tag, save_dir='./curve/score'):
+    check_mkdirs(save_dir)
+    plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
+    plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
+    plt.plot(scores, 'b', label='score')
+    plt.ylabel(tag)
+    plt.xlabel('epoch')
+    plt.legend()  # 个性化图例（颜色、形状等）
+    plt.savefig(save_dir + "/{}_scores.jpg".format(tag))
+
+
+def draw_score_curve(epoch_scores, save_dir='./curve/score'):
+    keys = []
+    scores = epoch_scores[0]
+    for key, value in scores.items():
+        keys.append(key)
+    results = {}
+    for scores in epoch_scores:
+        for key in keys:
+            score = scores[key]
+            if key not in results.keys():
+                results[key] = []
+            results[key].append(score)
+    for key, scores in results.items():
+        real_draw_score_curve(scores, key, save_dir)
+
+
 def draw_loss_curve(epoch_losses):
     plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
     plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
@@ -113,7 +188,7 @@ def draw_loss_curve(epoch_losses):
     plt.ylabel('loss')
     plt.xlabel('epoch')
     plt.legend()  # 个性化图例（颜色、形状等）
-    plt.savefig("./1_recon_loss.jpg")  # 保存图片 路径：/imgPath/
+    plt.savefig("./recon_loss.jpg")  # 保存图片 路径：/imgPath/
 
 
 def save_msg_to_local(msg, file_path):

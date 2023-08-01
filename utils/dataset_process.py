@@ -17,7 +17,7 @@ SPLIT_SYMBOL = '，'
 
 
 def save_data(save_dir, headers, data, file_name):
-    save_file_path = save_dir + file_name + '.csv'
+    save_file_path = save_dir + utils.FILE_SPLIT_SYMBOL + file_name + '.csv'
     with open(save_file_path, 'w', encoding='utf-8', newline='') as csv_file:
         writer = csv.writer(csv_file, delimiter='\t')
         writer.writerow(headers)
@@ -68,8 +68,8 @@ def rectify_summary_by_max_len(summary, max_len):
     return valid_summary
 
 
-def split(file_path, key_title, max_len):
-    save_dir = '../dataset/{}/{}/'.format(key_title, max_len)
+def split(file_path, key_title, max_len, name='short_video'):
+    save_dir = '../dataset/{}'.format(name)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     if not os.path.exists(file_path):
@@ -122,8 +122,9 @@ def stat_summary_max_len(key_title, max_len):
 
 if __name__ == '__main__':
     params = [
-        ('../resources/dataset.csv', utils.KEY_TITLE, 1536)
+        # ('../resources/dataset.csv', utils.KEY_TITLE, 1536, 'short_video')
+        ('../resources/msrvtt_dataset.csv', utils.KEY_TITLE, 1536, 'msrvtt')
     ]
-    for (file_path, key_title, max_len) in params:
-        split(file_path, key_title, max_len)
+    for (file_path, key_title, max_len, name) in params:
+        split(file_path, key_title, max_len, name)
         # stat_summary_max_len(key_title, max_len)
