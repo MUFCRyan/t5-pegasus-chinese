@@ -458,15 +458,18 @@ def init_argument():
     parser.add_argument('--model_type', default='mt5')
     parser.add_argument('--save_epoch_interval', type=int, default=9)
     parser.add_argument('--k_fold', type=int, default=1)
+    parser.add_argument('--shutdown', type=str, default='True')
 
     args = parser.parse_args()
     return args
 
 
 if __name__ == '__main__':
+    # step 1. init argument
+    args = init_argument()
+    shutdown = args.shutdown == str(True)
+    print('shutdown = {}'.format(shutdown))
     try:
-        # step 1. init argument
-        args = init_argument()
         is_mt5 = args.model_type == 'mt5'
 
         # step 2. prepare training data and validation data
@@ -497,5 +500,6 @@ if __name__ == '__main__':
         print(name + ' ' + msg)
         utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
         utils.send_wechat_msg(name, msg)
-        utils.check_shutdown()
+        if shutdown:
+            utils.check_shutdown()
 
