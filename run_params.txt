@@ -1,0 +1,4 @@
+ShortVideo
+    --test_data ./dataset/short_video/test.csv --max_len 1536 --mode test --pretrain_model ./t5_pegasus_pretrain --model ./saved_model/mt5_remote_summary_model --batch_size 1 --extract False
+MSRVTT
+    --test_data ./dataset/msrvtt/test.csv --max_len 1536 --mode test --model_type t5 --pretrain_model google/flan-t5-base --model ./saved_model_scheduler/best_summary_model_cider --batch_size 4 --extract False

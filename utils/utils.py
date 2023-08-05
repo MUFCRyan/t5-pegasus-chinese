@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 import platform
@@ -14,6 +15,8 @@ if platform.system().lower() == 'linux':
     _ROOT_DIR = ''
 SAVE_PATH_FEATURES = _ROOT_DIR + '/Dataset/NLP/ShortVideo/Kuaishou/features/text'
 
+SAVE_PATH_MSRVTT_FEATURES = _ROOT_DIR + '/Dataset/CVxNLP/MSR-VTT/features/text'
+
 FILE_SPLIT_SYMBOL = '/'
 
 
@@ -24,6 +27,7 @@ KEY_VALID_TITLE = 'valid_title'
 KEY_TITLE = 'title'
 KEY_PHOTO_ID = 'photo_id'
 KEY_SUMMARY = 'summary'
+KEY_GROUND_TRUTH = 'ground_truth'
 
 
 SUFFIX_PKL = ".pkl"
@@ -82,32 +86,50 @@ def get_bz_max_len(data_type=''):
         return 16, 512
 
 
-def load_short_video_data(file_name, data_type, need_title=True, need_pid=False):
+def load_short_video_data(file_name, data_type, need_title=True, need_pid=False, no_ground_truth=True):
     data = []
     key_photo_id = KEY_PHOTO_ID
     key_title = get_key_title(data_type)
     key_summary = KEY_SUMMARY
+    key_ground_truth = 'ground_truth'
     df = pd.read_csv(file_name, sep='\t', encoding='utf-8')
-    df = df[[key_photo_id, key_title, key_summary]]
+    if no_ground_truth:
+        df = df[[key_photo_id, key_title, key_summary]]
+    else:
+        df = df[[key_photo_id, key_title, key_summary, key_ground_truth]]
     for index, row in df.iterrows():
         photo_id = row[key_photo_id]
         summary = row[key_summary]
-        if need_title:
-            title = row[key_title]
-            if need_pid:
-                data.append((photo_id, title, summary))
+        if not no_ground_truth:
+            ground_truth = row[key_ground_truth]
+            ground_truth = eval(ground_truth)
+            if need_title:
+                title = row[key_title]
+                if need_pid:
+                    data.append((photo_id, title, summary, ground_truth))
+                else:
+                    data.append((title, summary, ground_truth))
             else:
-                data.append((title, summary))
+                if need_pid:
+                    data.append((photo_id, summary, ground_truth))
+                else:
+                    data.append(summary, ground_truth)
         else:
-            if need_pid:
-                data.append((photo_id, summary))
+            if need_title:
+                title = row[key_title]
+                if need_pid:
+                    data.append((photo_id, title, summary))
+                else:
+                    data.append((title, summary))
             else:
-                data.append(summary)
+                if need_pid:
+                    data.append((photo_id, summary))
+                else:
+                    data.append(summary)
     return data
 
 
-def draw_epoch_loss_curve(losses):
-    save_dir = './curve/epoch_loss'
+def draw_epoch_loss_curve(losses, save_dir='./curve/epoch_loss'):
     check_mkdirs(save_dir)
     plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
     plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
@@ -118,8 +140,7 @@ def draw_epoch_loss_curve(losses):
     plt.savefig(save_dir + "/epoch_loss.jpg")
 
 
-def draw_train_loss_curve(losses, epoch):
-    save_dir = './curve/train_loss'
+def draw_train_loss_curve(losses, epoch, save_dir='./curve/train_loss'):
     check_mkdirs(save_dir)
     plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
     plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
@@ -130,8 +151,7 @@ def draw_train_loss_curve(losses, epoch):
     plt.savefig(save_dir + "/train_loss_epoch_{}.jpg".format(epoch))
 
 
-def draw_optimizer_lr_curve(lrs, epoch):
-    save_dir = './curve/optimizer_lr'
+def draw_optimizer_lr_curve(lrs, epoch, save_dir='./curve/optimizer_lr'):
     check_mkdirs(save_dir)
     plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
     plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
@@ -142,8 +162,7 @@ def draw_optimizer_lr_curve(lrs, epoch):
     plt.savefig(save_dir + "/lr_epoch_{}.jpg".format(epoch))
 
 
-def draw_scheduler_lr_curve(lrs, epoch):
-    save_dir = './curve/scheduler_lr'
+def draw_scheduler_lr_curve(lrs, epoch, save_dir='./curve/scheduler_lr'):
     check_mkdirs(save_dir)
     plt.switch_backend('Agg')  # 后端设置'Agg' 参考：https://cloud.tencent.com/developer/article/1559466
     plt.figure()  # 设置图片信息 例如：plt.figure(num = 2,figsize=(640,480))
@@ -192,6 +211,7 @@ def draw_loss_curve(epoch_losses):
 
 
 def save_msg_to_local(msg, file_path):
+
     mode = 'w+'
     if os.path.exists(file_path):
         mode = 'r+'

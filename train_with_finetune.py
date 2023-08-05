@@ -76,12 +76,12 @@ class KeyDataset(Dataset):
         return self.data[index]
 
 
-def create_data(data, tokenizer, max_len=512, term='train'):
+def create_data(data, tokenizer, max_len=512, term='train', is_mt5=True):
     """调用tokenizer.encode编码正文/标题，每条样本用dict表示数据域
     """
     start = time.time_ns() / 1000000
     ret, flag = [], True
-    for title, content in tqdm(data):
+    for title, content, *ground_truth in tqdm(data):
         text_ids = tokenizer.encode(content, max_length=max_len, truncation='only_first')
         if flag and term == 'train':
             flag = False
@@ -99,6 +99,10 @@ def create_data(data, tokenizer, max_len=512, term='train'):
                         'attention_mask': [1] * len(text_ids),
                         'title': title
                        }
+        else:
+            features = None
+        if features is not None and ground_truth is not None and not is_mt5:
+            features[utils.KEY_GROUND_TRUTH] = ground_truth[0]
             
         ret.append(features)
     spend = time.time_ns() / 1000000 - start
@@ -158,7 +162,13 @@ def default_collate(batch):
     elif isinstance(elem, string_classes):
         return batch
     elif isinstance(elem, container_abcs.Mapping):
-        return {key: default_collate([d[key] for d in batch]) for key in elem}
+        datas = {}
+        for key in elem:
+            if key in [utils.KEY_GROUND_TRUTH]:
+                datas[key] = [d[key] for d in batch]
+            else:
+                datas[key] = default_collate([d[key] for d in batch])
+        return datas
     elif isinstance(elem, tuple) and hasattr(elem, '_fields'):  # namedtuple
         return elem_type(*(default_collate(samples) for samples in zip(*batch)))
     elif isinstance(elem, container_abcs.Sequence):
@@ -171,17 +181,56 @@ def default_collate(batch):
     raise TypeError(default_collate_err_msg_format.format(elem_type))
 
 
-def prepare_data(args, data_path, tokenizer, term='train', data_type=''):
+def prepare_data(args, data_path, tokenizer, term='train', data_type='', is_mt5=True):
     """准备batch数据
     """
     if utils.is_short_video_dataset(data_type):
-        data = utils.load_short_video_data(data_path, data_type)
+        data = utils.load_short_video_data(data_path, data_type, no_ground_truth=is_mt5)
     else:
         data = load_data(data_path)
-    data = create_data(data, tokenizer, args.max_len, term)
+    data = create_data(data, tokenizer, args.max_len, term, is_mt5)
     data = KeyDataset(data)
-    data = DataLoader(data, batch_size=args.batch_size, collate_fn=default_collate)
+    data = DataLoader(data, batch_size=int(args.batch_size), collate_fn=default_collate)
     return data
+
+
+def prepare_k_fold_data(args, data_path, tokenizer, k_fold, data_type='', is_mt5=True):
+    data = utils.load_short_video_data(data_path, data_type, no_ground_truth=is_mt5)
+    len_data = len(data)
+    split_num = int(1 / k_fold * len_data)
+    train_data_list = []
+    dev_data_list = []
+    for k in range(k_fold):
+        dev_start = split_num * (k_fold - k - 1)
+        dev_end = dev_start + split_num
+        if k == 0:
+            dev_end = len_data
+        if k == len_data - 1:
+            dev_start = 0
+        dev_list = data[dev_start: dev_end]
+        dev_data = create_data(dev_list, tokenizer, args.max_len, 'dev', is_mt5)
+        dev_data = KeyDataset(dev_data)
+        dev_data = DataLoader(dev_data, batch_size=int(args.batch_size), collate_fn=default_collate)
+        dev_data_list.append(dev_data)
+        
+        train_left_range = [0, dev_start]
+        train_right_range = [dev_end, len_data]
+        train_list = []
+        if k == 0:
+            train_right_range = None
+        if k == len_data - 1:
+            train_left_range = None
+
+        if train_left_range is not None:
+            train_list.extend(data[train_left_range[0]: train_left_range[1]])
+        if train_right_range is not None:
+            train_list.extend(data[train_right_range[0]: train_right_range[1]])
+        
+        train_data = create_data(train_list, tokenizer, args.max_len, 'train', is_mt5)
+        train_data = KeyDataset(train_data)
+        train_data = DataLoader(train_data, batch_size=int(args.batch_size), collate_fn=default_collate)
+        train_data_list.append(train_data)
+    return train_data_list, dev_data_list
 
 
 def compute_rouge(source, target):
@@ -217,140 +266,171 @@ def compute_rouges(sources, targets):
     return {k: v / len(targets) for k, v in scores.items()}
 
 
-def train_model(model, optimizer, train_data, dev_data, tokenizer, device, args):
+def train_model(model, optimizer, tokenizer, device, args, is_mt5):
     if not os.path.exists(args.model_dir):
         os.mkdir(args.model_dir)
+    k_fold = int(args.k_fold)
+    if k_fold < 1:
+        k_fold = 1
         
-    best_rouge_l = 0
-    best_cider = 0
-    total_loss = {}
-    epoch_loss = []
-    total_epoch = int(args.num_epoch)
-    save_epoch_interval = int(args.save_epoch_interval)
-    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epoch, eta_min=0, last_epoch=-1)
-    for epoch in range(total_epoch):
-        model.train()  # 指明当前是训练阶段
-        accu_train_loss = []
-        mini_train_loss = []
-        optimizer_lrs = []
-        scheduler_lrs = []
-        for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
-            cur = {k: v.to(device) for k, v in cur.items()}
-            prob = model(**cur)[0]  # 计算当前样本的结果
-            mask = cur['decoder_attention_mask']
-            mask = mask[:, 1:]
-            mask = mask.reshape(-1)
-            mask = mask.bool()
-            prob = prob[:, :-1]
-            prob = prob.reshape((-1, prob.size(-1)))
-            prob = prob[mask]
-            labels = cur['decoder_input_ids']
-            labels = labels[:, 1:]
-            labels = labels.reshape(-1)
-            labels = labels[mask]
-            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
-            accu_train_loss.append(loss.detach().cpu().item())
-            loss_value = loss.detach().cpu().item()
-            if loss_value <= 10:
-                mini_train_loss.append(loss_value)
-            else:
-                mini_train_loss.append(10)
-            if i % 100 == 0:
-                print("Iter {}:  Training Loss: {}".format(i, loss.item()))
-                utils.draw_train_loss_curve(mini_train_loss, epoch)
-                utils.draw_optimizer_lr_curve(optimizer_lrs, epoch)
-                utils.draw_scheduler_lr_curve(scheduler_lrs, epoch)
-            optimizer_lrs.append(optimizer.state_dict()['param_groups'][0]['lr'])
-            scheduler_lrs.append(lr_scheduler.get_last_lr())
-            loss.backward()  # 开启后向传播
-            optimizer.step()  # 更新模型参数
-            optimizer.zero_grad()  # 梯度清零
-        accu_train_loss = accu_train_loss
-        avg_train_loss = sum(accu_train_loss) / len(accu_train_loss)
-        epoch_loss.append(avg_train_loss)
+    train_data_list = []
+    dev_data_list = []
+    if k_fold <= 1:
+        train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE, is_mt5=is_mt5)
+        train_data_list.append(train_data)
+        dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE, is_mt5=is_mt5)
+        dev_data_list.append(dev_data)
+    else:
+        k_fold_data_path = args.train_data.replace('/train.csv', '/k_fold.csv')
+        train_data_list, dev_data_list = prepare_k_fold_data(args, k_fold_data_path, tokenizer, k_fold, data_type=DATA_TYPE, is_mt5=is_mt5)
+    
+    for k in range(k_fold):
+        train_data = train_data_list[k]
+        dev_data = dev_data_list[k]
+        best_rouge_l = 0
+        best_cider = 0
+        total_loss = {}
+        epoch_loss = []
+        epoch_scores = []
+        ground_truth_epoch_scores = []
+        total_epoch = int(args.num_epoch)
+        save_epoch_interval = int(args.save_epoch_interval)
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epoch, eta_min=0, last_epoch=-1)
+        key_ground_truth = utils.KEY_GROUND_TRUTH
+        for epoch in range(total_epoch):
+            model.train()  # 指明当前是训练阶段
+            accu_train_loss = []
+            mini_train_loss = []
+            optimizer_lrs = []
+            scheduler_lrs = []
+            for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
+                cur = {k: v.to(device) for k, v in cur.items() if k not in ['raw_data', 'title', utils.KEY_PHOTO_ID, key_ground_truth]}
+                prob = model(**cur)[0]  # 计算当前样本的结果
+                mask = cur['decoder_attention_mask']
+                mask = mask[:, 1:]
+                mask = mask.reshape(-1)
+                mask = mask.bool()
+                prob = prob[:, :-1]
+                prob = prob.reshape((-1, prob.size(-1)))
+                prob = prob[mask]
+                labels = cur['decoder_input_ids']
+                labels = labels[:, 1:]
+                labels = labels.reshape(-1)
+                labels = labels[mask]
+                loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
+                accu_train_loss.append(loss.detach().cpu().item())
+                loss_value = loss.detach().cpu().item()
+                if loss_value <= 10:
+                    mini_train_loss.append(loss_value)
+                else:
+                    mini_train_loss.append(10)
+                if i % 100 == 0:
+                    print("k_fold{}_k{}_Iter {}:  Training Loss: {}".format(k_fold, k, i, loss.item()))
+                    utils.draw_train_loss_curve(mini_train_loss, epoch, './curve/k_fold{}_k{}_train_loss'.format(k_fold, k))
+                    utils.draw_optimizer_lr_curve(optimizer_lrs, epoch, './curve/k_fold{}_k{}_optimizer_lr'.format(k_fold, k))
+                    utils.draw_scheduler_lr_curve(scheduler_lrs, epoch, './curve/k_fold{}_k{}_scheduler_lr'.format(k_fold, k))
+                optimizer_lrs.append(optimizer.state_dict()['param_groups'][0]['lr'])
+                scheduler_lrs.append(lr_scheduler.get_last_lr())
+                loss.backward()  # 开启后向传播
+                optimizer.step()  # 更新模型参数
+                optimizer.zero_grad()  # 梯度清零
+            accu_train_loss = accu_train_loss
+            avg_train_loss = sum(accu_train_loss) / len(accu_train_loss)
+            epoch_loss.append(avg_train_loss)
+    
+            lr_scheduler.step()
+    
+            # 验证
+            model.eval()  # 指明当前是验证阶段
+            gens = []
+            summaries = []
+            ground_truthes = []
+            for feature in tqdm(dev_data):
+                title = feature['title']
+                ground_truth = feature[key_ground_truth]
+                content = {k : v.to(device) for k, v in feature.items() if k not in ['title', key_ground_truth]}
+                if args.data_parallel and torch.cuda.is_available():
+                    gen = model.module.generate(max_length=args.max_len_generate,
+                                 eos_token_id=tokenizer.sep_token_id,
+                                 decoder_start_token_id=tokenizer.cls_token_id,
+                                 **content)
+                else:
+                    gen = model.generate(max_length=args.max_len_generate,
+                                 eos_token_id=tokenizer.sep_token_id,
+                                 decoder_start_token_id=tokenizer.cls_token_id,
+                                 **content)
+                gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
+                if is_mt5:
+                    gen = [item.replace(' ', '') for item in gen]
+                gens.extend(gen)
+                summaries.extend(title)
+                ground_truthes.extend(ground_truth)
+            scores = calc_scores(gens, summaries, is_mt5)
+            ground_truth_scores = calc_scores(gens, ground_truthes, is_mt5, True)
+            epoch_scores.append(scores)
+            ground_truth_epoch_scores.append(ground_truth_scores)
+            utils.draw_score_curve(epoch_scores, './curve/k_fold{}_k{}_scores'.format(k_fold, k))
+            utils.draw_score_curve(ground_truth_epoch_scores, './curve/k_fold{}_k{}_ground_truth_scores'.format(k_fold, k))
+            cider = scores['CIDEr'].item()
+            ground_truth_cider = ground_truth_scores['CIDEr'].item()
+            print('k_fold{}_k{}_CIDEr = {}'.format(k_fold, k, cider))
+            print('k_fold{}_k{}_ground truth CIDEr = {}'.format(k_fold, k, ground_truth_cider))
+            print("k_fold{}_k{}_Validation Loss: {}".format(k_fold, k, scores))
+            rouge_l = scores['ROUGE_L']
+            print('k_fold{}_k{}_ROUGE_L = {}'.format(k_fold, k, rouge_l))
 
-        lr_scheduler.step()
-
-        # 验证
-        model.eval()  # 指明当前是验证阶段
-        gens = []
-        summaries = []
-        for feature in tqdm(dev_data):
-            title = feature['title']
-            content = {k : v.to(device) for k, v in feature.items() if k != 'title'} 
-            if args.data_parallel and torch.cuda.is_available():
-                gen = model.module.generate(max_length=args.max_len_generate,
-                             eos_token_id=tokenizer.sep_token_id,
-                             decoder_start_token_id=tokenizer.cls_token_id,
-                             **content)
-            else:
-                gen = model.generate(max_length=args.max_len_generate,
-                             eos_token_id=tokenizer.sep_token_id,
-                             decoder_start_token_id=tokenizer.cls_token_id,
-                             **content)
-            gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
-            gen = [item.replace(' ', '') for item in gen]
-            # print(title)
-            # print(gen)
-            gens.extend(gen)
-            summaries.extend(title)
-        scores = calc_scores(gens, summaries)
-        utils.draw_score_curve(scores)
-        cider = scores['CIDEr'].item()
-        print("Validation Loss: {}".format(scores))
-        rouge_l = scores['rouge-l']
-        model_name = 'best_summary_model'
-        if rouge_l > best_rouge_l:
-            best_rouge_l = rouge_l
-            save_name = model_name + '_rouge_l'
-            if args.data_parallel and torch.cuda.is_available():
-                torch.save(model.module, os.path.join(args.model_dir, save_name))
-            else:
-                torch.save(model, os.path.join(args.model_dir, save_name))
-            total_loss['best_rouge_l'] = {
+            model_name = 'k_fold{}_k{}_best_summary_model'.format(k_fold, k)
+            if rouge_l > best_rouge_l:
+                best_rouge_l = rouge_l
+                save_name = model_name + '_rouge_l'
+                if args.data_parallel and torch.cuda.is_available():
+                    torch.save(model.module, os.path.join(args.model_dir, save_name))
+                else:
+                    torch.save(model, os.path.join(args.model_dir, save_name))
+                total_loss['best_rouge_l'] = {
+                    'avg_train_loss': avg_train_loss,
+                    'accu_train_loss': accu_train_loss,
+                    'scores': scores,
+                    'rouge_l': rouge_l,
+                    'epoch': epoch
+                }
+    
+            if cider > best_cider:
+                best_cider = cider
+                save_name = model_name + '_cider'
+                if args.data_parallel and torch.cuda.is_available():
+                    torch.save(model.module, os.path.join(args.model_dir, save_name))
+                else:
+                    torch.save(model, os.path.join(args.model_dir, save_name))
+                total_loss['best_cider'] = {
+                    'avg_train_loss': avg_train_loss,
+                    'accu_train_loss': accu_train_loss,
+                    'scores': scores,
+                    'cider': cider,
+                    'epoch': epoch
+                }
+    
+            total_loss[epoch] = {
                 'avg_train_loss': avg_train_loss,
                 'accu_train_loss': accu_train_loss,
                 'scores': scores,
                 'rouge_l': rouge_l,
-                'epoch': epoch
+                'cider': cider
             }
-
-        if cider > best_cider:
-            best_cider = cider
-            save_name = model_name + '_cider'
-            if args.data_parallel and torch.cuda.is_available():
-                torch.save(model.module, os.path.join(args.model_dir, save_name))
-            else:
-                torch.save(model, os.path.join(args.model_dir, save_name))
-            total_loss['best_cider'] = {
-                'avg_train_loss': avg_train_loss,
-                'accu_train_loss': accu_train_loss,
-                'scores': scores,
-                'cider': cider,
-                'epoch': epoch
-            }
-
-        total_loss[epoch] = {
-            'avg_train_loss': avg_train_loss,
-            'accu_train_loss': accu_train_loss,
-            'scores': scores,
-            'rouge_l': rouge_l,
-            'cider': cider
-        }
-        epoch_plus = epoch + 1
-        if epoch_plus % save_epoch_interval == 0 or epoch_plus == total_epoch:
-            utils.check_mkdirs('./checkpoint')
-            torch.save(model, './checkpoint/{}_{}'.format(model_name, str(epoch)))
-            utils.send_wechat_msg('train_with_finetune save_model', 'epoch = {}, rouge_l = {}, cider = {}'
-                                  .format(epoch, rouge_l, cider))
-
-        if epoch % 4 == 0:
-            utils.send_wechat_msg('train_with_finetune', 'epoch = {}, rouge_l = {}, cider = {}'
-                                  .format(epoch, rouge_l, cider))
-    utils.draw_epoch_loss_curve(epoch_loss)
-    utils.save_msg_to_local(json.dumps(total_loss), 'TrainLossScore.txt')
-    utils.send_wechat_msg('train_with_finetune', 'train_model finished')
+            info = 'k_fold={} k={} epoch={}, cider={}, rouge_l={}'.format(k_fold, k, epoch, cider, rouge_l)
+            epoch_plus = epoch + 1
+            if epoch_plus % save_epoch_interval == 0 or epoch_plus == total_epoch:
+                utils.check_mkdirs('./checkpoint')
+                torch.save(model, './checkpoint/k_fold{}_k{}_{}_{}'.format(k_fold, k, model_name, str(epoch)))
+                utils.send_wechat_msg('train_with_finetune save_model', info)
+    
+            if epoch % 4 == 0:
+                utils.send_wechat_msg('train_with_finetune', info)
+            utils.draw_epoch_loss_curve(epoch_loss, './curve/k_fold{}_k{}_epoch_loss'.format(k_fold, k))
+        utils.check_mkdirs('./TrainLossScore')
+        utils.save_msg_to_local(json.dumps(total_loss), './TrainLossScore/k_fold{}_k{}_LossScore.txt'.format(k_fold, k))
+        utils.send_wechat_msg('train_with_finetune', 'train_model k_fold{}_k{} finished'.format(k_fold, k))
     utils.check_shutdown()
 
 
@@ -366,55 +446,53 @@ def init_argument():
     parser.add_argument('--model_dir', default='./saved_model')
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
-    parser.add_argument('--batch_size', default=bz, help='batch size')
-    parser.add_argument('--lr', default=4e-5, help='learning rate')
+    parser.add_argument('--batch_size', default=1, help='batch size')
+    parser.add_argument('--lr', default=2e-5, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
     parser.add_argument('--max_len', default=max_len, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=64, help='max length of outputs')
     parser.add_argument('--data_type', default=DATA_TYPE)
     parser.add_argument('--model_type', default='mt5')
     parser.add_argument('--save_epoch_interval', type=int, default=9)
+    parser.add_argument('--k_fold', type=int, default=1)
 
     args = parser.parse_args()
     return args
 
 
 if __name__ == '__main__':
-    try:
-        # step 1. init argument
-        args = init_argument()
-        is_mt5 = args.model_type == 'mt5'
+    #try:
+    # step 1. init argument
+    args = init_argument()
+    is_mt5 = args.model_type == 'mt5'
 
-        # step 2. prepare training data and validation data
-        if is_mt5:
-            tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
-        special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
-        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+    # step 2. prepare training data and validation data
+    if is_mt5:
+        tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
+    special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
+    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 
-        train_data = prepare_data(args, args.train_data, tokenizer, term='train', data_type=DATA_TYPE)
-        dev_data = prepare_data(args, args.dev_data, tokenizer, term='dev', data_type=DATA_TYPE)
+    # step 3. load pretrain model
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if is_mt5:
+        model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
+    model.resize_token_embeddings(len(tokenizer))
+    if args.data_parallel and torch.cuda.is_available():
+        device_ids = range(torch.cuda.device_count())
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
 
-        # step 3. load pretrain model
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if is_mt5:
-            model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
-        else:
-            model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
-        model.resize_token_embeddings(len(tokenizer))
-        if args.data_parallel and torch.cuda.is_available():
-            device_ids = range(torch.cuda.device_count())
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
-
-        # step 4. finetune
-        adam = torch.optim.Adam(model.parameters(), lr=args.lr)
-        train_model(model, adam, train_data, dev_data, tokenizer, device, args)
-    except Exception as e:
+    # step 4. finetune
+    adam = torch.optim.Adam(model.parameters(), lr=args.lr)
+    train_model(model, adam, tokenizer, device, args, is_mt5)
+    '''except Exception as e:
         name = 'train_with_finetune'
         msg = 'exception: {}'.format(str(e))
         print(name + ' ' + msg)
         utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
         utils.send_wechat_msg(name, msg)
-        utils.check_shutdown()
+        utils.check_shutdown()'''
 

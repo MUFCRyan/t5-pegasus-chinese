@@ -35,13 +35,24 @@ class Scorer:
         return total_scores
 
 
-def calc_scores(predicts, titles):
+def calc_scores(predicts, titles, is_mt5, is_ground_truth=False):
     real_predicts = {}
     for index, predict in enumerate(predicts):
-        real_predicts[index] = [' '.join(predict)]
+        if is_mt5:
+            real_title = ' '.join(predict)
+        else:
+            real_title = predict
+        real_predicts[index] = [real_title]
     real_titles = {}
     for index, title in enumerate(titles):
-        real_titles[index] = [' '.join(title)]
+        if is_mt5:
+            real_title = ' '.join(title)
+        else:
+            real_title = title
+        if is_ground_truth:
+            real_titles[index] = real_title
+        else:
+            real_titles[index] = [real_title]
     scorer = Scorer(real_predicts, real_titles)
     total_scores = scorer.compute_scores()
     return total_scores
