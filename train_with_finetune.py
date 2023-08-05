@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 import time
 
@@ -208,6 +209,7 @@ def prepare_k_fold_data(args, data_path, tokenizer, k_fold, data_type='', is_mt5
         if k == len_data - 1:
             dev_start = 0
         dev_list = data[dev_start: dev_end]
+        random.shuffle(dev_list)
         dev_data = create_data(dev_list, tokenizer, args.max_len, 'dev', is_mt5)
         dev_data = KeyDataset(dev_data)
         dev_data = DataLoader(dev_data, batch_size=int(args.batch_size), collate_fn=default_collate)
@@ -225,7 +227,7 @@ def prepare_k_fold_data(args, data_path, tokenizer, k_fold, data_type='', is_mt5
             train_list.extend(data[train_left_range[0]: train_left_range[1]])
         if train_right_range is not None:
             train_list.extend(data[train_right_range[0]: train_right_range[1]])
-        
+        random.shuffle(train_list)
         train_data = create_data(train_list, tokenizer, args.max_len, 'train', is_mt5)
         train_data = KeyDataset(train_data)
         train_data = DataLoader(train_data, batch_size=int(args.batch_size), collate_fn=default_collate)
@@ -283,7 +285,9 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
     else:
         k_fold_data_path = args.train_data.replace('/train.csv', '/k_fold.csv')
         train_data_list, dev_data_list = prepare_k_fold_data(args, k_fold_data_path, tokenizer, k_fold, data_type=DATA_TYPE, is_mt5=is_mt5)
-    
+
+    total_epoch = int(args.num_epoch)
+    save_epoch_interval = int(args.save_epoch_interval)
     for k in range(k_fold):
         train_data = train_data_list[k]
         dev_data = dev_data_list[k]
@@ -293,8 +297,6 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
         epoch_loss = []
         epoch_scores = []
         ground_truth_epoch_scores = []
-        total_epoch = int(args.num_epoch)
-        save_epoch_interval = int(args.save_epoch_interval)
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epoch, eta_min=0, last_epoch=-1)
         key_ground_truth = utils.KEY_GROUND_TRUTH
         for epoch in range(total_epoch):
@@ -376,7 +378,8 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
             ground_truth_cider = ground_truth_scores['CIDEr'].item()
             print('k_fold{}_k{}_CIDEr = {}'.format(k_fold, k, cider))
             print('k_fold{}_k{}_ground truth CIDEr = {}'.format(k_fold, k, ground_truth_cider))
-            print("k_fold{}_k{}_Validation Loss: {}".format(k_fold, k, scores))
+            print("k_fold{}_k{}_Validation scores Loss: {}".format(k_fold, k, scores))
+            print("k_fold{}_k{}_Validation ground truth scores Loss: {}".format(k_fold, k, ground_truth_scores))
             rouge_l = scores['ROUGE_L']
             print('k_fold{}_k{}_ROUGE_L = {}'.format(k_fold, k, rouge_l))
 
@@ -461,38 +464,38 @@ def init_argument():
 
 
 if __name__ == '__main__':
-    #try:
-    # step 1. init argument
-    args = init_argument()
-    is_mt5 = args.model_type == 'mt5'
+    try:
+        # step 1. init argument
+        args = init_argument()
+        is_mt5 = args.model_type == 'mt5'
 
-    # step 2. prepare training data and validation data
-    if is_mt5:
-        tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
-    special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
-    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+        # step 2. prepare training data and validation data
+        if is_mt5:
+            tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
+        special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
+        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 
-    # step 3. load pretrain model
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if is_mt5:
-        model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
-    else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
-    model.resize_token_embeddings(len(tokenizer))
-    if args.data_parallel and torch.cuda.is_available():
-        device_ids = range(torch.cuda.device_count())
-        model = torch.nn.DataParallel(model, device_ids=device_ids)
+        # step 3. load pretrain model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if is_mt5:
+            model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+        else:
+            model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
+        model.resize_token_embeddings(len(tokenizer))
+        if args.data_parallel and torch.cuda.is_available():
+            device_ids = range(torch.cuda.device_count())
+            model = torch.nn.DataParallel(model, device_ids=device_ids)
 
-    # step 4. finetune
-    adam = torch.optim.Adam(model.parameters(), lr=args.lr)
-    train_model(model, adam, tokenizer, device, args, is_mt5)
-    '''except Exception as e:
+        # step 4. finetune
+        adam = torch.optim.Adam(model.parameters(), lr=args.lr)
+        train_model(model, adam, tokenizer, device, args, is_mt5)
+    except Exception as e:
         name = 'train_with_finetune'
         msg = 'exception: {}'.format(str(e))
         print(name + ' ' + msg)
         utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
         utils.send_wechat_msg(name, msg)
-        utils.check_shutdown()'''
+        utils.check_shutdown()
 
