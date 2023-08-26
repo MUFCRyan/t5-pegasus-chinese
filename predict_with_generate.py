@@ -103,7 +103,7 @@ def create_data(data, tokenizer, max_len, is_mt5=True):
             features['title'] = title
         if photo_id:
             features[utils.KEY_PHOTO_ID] = str(photo_id)
-        if features is not None and ground_truth is not None and not is_mt5:
+        if features is not None and ground_truth is not None and len(ground_truth) > 0 and not is_mt5:
             features[utils.KEY_GROUND_TRUTH] = ground_truth[0]
         ret.append(features)
     return ret
@@ -216,7 +216,7 @@ def default_collate(batch):
     raise TypeError(default_collate_err_msg_format.format(elem_type))
     
 
-def prepare_data(args, tokenizer, data_type='', is_extract=False):
+def prepare_data(args, tokenizer, data_type='', is_extract=False, use_gt=False):
     """准备batch数据
     """
     if is_extract:
@@ -225,14 +225,14 @@ def prepare_data(args, tokenizer, data_type='', is_extract=False):
         data_path = args.test_data
 
     if utils.is_short_video_dataset(data_type):
-        test_data = utils.load_short_video_data(data_path, data_type, True, True)
+        test_data = utils.load_short_video_data(data_path, data_type, True, need_pid=True, use_gt=use_gt)
     else:
         test_data = load_data(data_path)
 
     if is_extract:
         test_data = create_extract_data(test_data, tokenizer, int(args.max_len))
     else:
-        test_data = create_data(test_data, tokenizer, int(args.max_len))
+        test_data = create_data(test_data, tokenizer, int(args.max_len), is_mt5=False)
 
     test_data = KeyDataset(test_data)
     test_data = DataLoader(test_data, batch_size=int(args.batch_size), collate_fn=default_collate, shuffle=False)
@@ -273,7 +273,7 @@ def compute_rouges(sources, targets):
     return {k: v / len(targets) for k, v in scores.items()}
 
 
-def generate_summary(test_data, model, tokenizer, args, is_mt5=True):
+def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=False):
     gens, summaries = [], []
     mode = args.mode
     predict_dir = utils.PREDICT_DIR + '_' + args.model_type
@@ -308,12 +308,12 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True):
             if 'title' in feature:
                 summaries.extend(feature['title'])
             if has_ground_truth and ground_truth is not None:
-                ground_truthes.append(ground_truth)
+                ground_truthes.extend(ground_truth)
     if len(summaries) > 0:
         scores = calc_scores(gens, summaries, is_mt5)
         print('scores = {}'.format(scores))
         if has_ground_truth and len(ground_truthes) > 0:
-            scores = calc_scores(gens, summaries, is_mt5, ground_truthes)
+            scores = calc_scores(gens, ground_truthes, is_mt5, is_ground_truth=True)
             print('ground_truth scores = {}'.format(scores))
     print('Done!')
 
@@ -360,9 +360,10 @@ def init_argument():
 
     parser.add_argument('--batch_size', default=1, help='batch size')
     parser.add_argument('--max_len', default=512, help='max length of inputs')
-    parser.add_argument('--max_len_generate', default=40, help='max length of generated text')
+    parser.add_argument('--max_len_generate', default=64, help='max length of generated text')
     parser.add_argument('--use_multiprocess', default=False, action='store_true')
     parser.add_argument('--extract', type=str, default='False', help='if use extract text features')
+    parser.add_argument('--use_gt', type=str, default='False')
     parser.add_argument('--mode', default='temp')
     parser.add_argument('--model_type', default='mt5')
 
@@ -407,15 +408,20 @@ if __name__ == '__main__':
     args = init_argument()
     is_mt5 = args.model_type == 'mt5'
     is_extract = args.extract == str(True)
+    use_gt = args.use_gt == str(True)
 
     # step 2. prepare test data
     if is_mt5:
-        tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+        tokenizer_config_path = './t5_pegasus_pretrain'
     else:
-        tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
+        tokenizer_config_path = 'google/flan-t5-base'
+    if is_mt5:
+        tokenizer = T5PegasusTokenizer.from_pretrained(tokenizer_config_path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_config_path)
     special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
     num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-    test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract)
+    test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract, use_gt=use_gt)
     
     # step 3. load finetuned model
     model = torch.load(args.model, map_location=device)
@@ -440,4 +446,4 @@ if __name__ == '__main__':
             res.to_csv(args.result_file, index=False, header=False, encoding='utf-8')
             print('Done!')
         else:
-            generate_summary(test_data, model, tokenizer, args, is_mt5=is_mt5)
+            generate_summary(test_data, model, tokenizer, args, is_mt5=is_mt5, use_gt=use_gt)

@@ -83,7 +83,7 @@ def split(file_path, key_title, max_len, name='short_video'):
     df = pd.read_csv(file_path, sep='\t', encoding='utf-8')
     keys = df.keys()
     print('ZFC df keys = {}'.format(keys))
-    is_msrvtt = name == 'msrvtt'
+    is_msrvtt = name.startswith('msrvtt')
     if is_msrvtt:
         df = df[[key_photo_id, key_is_mmu, key_title, key_summary, key_ground_truth]]
     else:
@@ -131,11 +131,49 @@ def stat_summary_max_len(key_title, max_len):
     print('ZFC stat_summary_max_len final curr_max_len = {}, data_dir = {}'.format(curr_max_len, data_dir))
 
 
+def generate_short_video_data_same_with_swinbert():
+    total_data_csv_path = '../dataset/short_video/dev.csv'
+    swinbert_data_path = [
+        ('train', '../resources/shortvideo_swinbert/train.caption.tsv'),
+        ('dev', '../resources/shortvideo_swinbert/val.caption.tsv')
+    ]
+    total_data = {}
+    df = pd.read_csv(total_data_csv_path, sep='\t', encoding='utf-8')
+    key_photo_id = utils.KEY_PHOTO_ID
+    key_title = utils.KEY_TITLE
+    key_summary = utils.KEY_SUMMARY
+    key_is_mmu = 'is_mmu'
+    df = df[[key_photo_id, key_title, key_summary, key_is_mmu]]
+    for index, row in df.iterrows():
+        photo_id = row[key_photo_id]
+        title = row[key_title]
+        summary = row[key_summary]
+        is_mmu = row[key_is_mmu]
+        total_data[photo_id] = (title, summary, is_mmu)
+    save_dir = '../dataset/short_video_swinbert'
+    for data_type, data_path in swinbert_data_path:
+        data = []
+        with open(data_path, mode='r', encoding='utf-8') as f:
+            lines = f.readlines()
+            for line in lines:
+                line = line.split(sep='\t')
+                video_path, _ = line[0], line[1]
+                (_, file_name_ext) = os.path.split(video_path)
+                (photo_id, _) = os.path.splitext(file_name_ext)
+                (title, summary, is_mmu) = total_data[int(photo_id)]
+                data.append((photo_id, is_mmu, title, summary))
+        headers = [key_photo_id, key_is_mmu, key_title, key_summary]
+        save_data(save_dir, headers, data, data_type)
+
+
 if __name__ == '__main__':
     params = [
         # ('../resources/dataset.csv', utils.KEY_TITLE, 1536, 'short_video')
-        ('../resources/msrvtt_dataset.csv', utils.KEY_TITLE, 1536, 'msrvtt')
+        # ('../resources/msrvtt_dataset.csv', utils.KEY_TITLE, 1536, 'msrvtt')
+        # ('../resources/msrvtt_dataset_32.csv', utils.KEY_TITLE, 1536, 'msrvtt_32')
     ]
     for (file_path, key_title, max_len, name) in params:
         split(file_path, key_title, max_len, name)
         # stat_summary_max_len(key_title, max_len)
+
+    generate_short_video_data_same_with_swinbert()

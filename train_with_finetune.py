@@ -83,6 +83,7 @@ def create_data(data, tokenizer, max_len=512, term='train', is_mt5=True):
     start = time.time_ns() / 1000000
     ret, flag = [], True
     for title, content, *ground_truth in tqdm(data):
+        source = tokenizer.batch_encode_plus([content], max_length=max_len, truncation=True)
         text_ids = tokenizer.encode(content, max_length=max_len, truncation='only_first')
         if flag and term == 'train':
             flag = False
@@ -186,7 +187,7 @@ def prepare_data(args, data_path, tokenizer, term='train', data_type='', is_mt5=
     """准备batch数据
     """
     if utils.is_short_video_dataset(data_type):
-        data = utils.load_short_video_data(data_path, data_type, no_ground_truth=is_mt5)
+        data = utils.load_short_video_data(data_path, data_type, use_gt=not is_mt5)
     else:
         data = load_data(data_path)
     data = create_data(data, tokenizer, args.max_len, term, is_mt5)
@@ -196,7 +197,7 @@ def prepare_data(args, data_path, tokenizer, term='train', data_type='', is_mt5=
 
 
 def prepare_k_fold_data(args, data_path, tokenizer, k_fold, data_type='', is_mt5=True):
-    data = utils.load_short_video_data(data_path, data_type, no_ground_truth=is_mt5)
+    data = utils.load_short_video_data(data_path, data_type, use_gt=not is_mt5)
     len_data = len(data)
     split_num = int(1 / k_fold * len_data)
     train_data_list = []
@@ -269,6 +270,8 @@ def compute_rouges(sources, targets):
 
 
 def train_model(model, optimizer, tokenizer, device, args, is_mt5):
+    use_model_loss = args.use_model_loss == str(True)
+
     if not os.path.exists(args.model_dir):
         os.mkdir(args.model_dir)
     k_fold = int(args.k_fold)
@@ -307,22 +310,26 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
             scheduler_lrs = []
             for i, cur in enumerate(tqdm(train_data, desc='Epoch {}:'.format(epoch))):
                 cur = {k: v.to(device) for k, v in cur.items() if k not in ['raw_data', 'title', utils.KEY_PHOTO_ID, key_ground_truth]}
-                prob = model(**cur)[0]  # 计算当前样本的结果
-                mask = cur['decoder_attention_mask']
-                mask = mask[:, 1:]
-                mask = mask.reshape(-1)
-                mask = mask.bool()
-                prob = prob[:, :-1]
-                prob = prob.reshape((-1, prob.size(-1)))
-                prob = prob[mask]
-                labels = cur['decoder_input_ids']
-                labels = labels[:, 1:]
-                labels = labels.reshape(-1)
-                labels = labels[mask]
-                loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
-                accu_train_loss.append(loss.detach().cpu().item())
+                labels = cur['decoder_input_ids'].to(device)
+                # if is_mt5:
+                result = model(**cur, labels=labels)  # 计算当前样本的结果
+                loss, prob = result[0], result[1]
+                if not use_model_loss:
+                    mask = cur['decoder_attention_mask']
+                    mask = mask[:, 1:]
+                    mask = mask.reshape(-1)
+                    mask = mask.bool()
+                    prob = prob[:, :-1]
+                    prob = prob.reshape((-1, prob.size(-1)))
+                    prob = prob[mask]
+                    labels = labels[:, 1:]
+                    labels = labels.reshape(-1)
+                    labels = labels[mask]
+                    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+                    loss = loss_fct(prob, labels)  # 根据当前样本的计算结果 & 标签 --> 计算Loss
+
                 loss_value = loss.detach().cpu().item()
+                accu_train_loss.append(loss_value)
                 if loss_value <= 10:
                     mini_train_loss.append(loss_value)
                 else:
@@ -340,7 +347,7 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
             accu_train_loss = accu_train_loss
             avg_train_loss = sum(accu_train_loss) / len(accu_train_loss)
             epoch_loss.append(avg_train_loss)
-    
+
             lr_scheduler.step()
     
             # 验证
@@ -350,18 +357,26 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
             ground_truthes = []
             for feature in tqdm(dev_data):
                 title = feature['title']
-                ground_truth = feature[key_ground_truth]
-                content = {k : v.to(device) for k, v in feature.items() if k not in ['title', key_ground_truth]}
-                if args.data_parallel and torch.cuda.is_available():
-                    gen = model.module.generate(max_length=args.max_len_generate,
-                                 eos_token_id=tokenizer.sep_token_id,
-                                 decoder_start_token_id=tokenizer.cls_token_id,
-                                 **content)
+                if key_ground_truth in feature.keys():
+                    ground_truth = feature[key_ground_truth]
                 else:
-                    gen = model.generate(max_length=args.max_len_generate,
-                                 eos_token_id=tokenizer.sep_token_id,
-                                 decoder_start_token_id=tokenizer.cls_token_id,
-                                 **content)
+                    ground_truth = []
+                content = {k : v.to(device) for k, v in feature.items() if k not in ['title', 'input_ids', key_ground_truth]}
+                input_ids = feature['input_ids'].to(device)
+                if is_mt5:
+                    if args.data_parallel and torch.cuda.is_available():
+                        gen = model.module.generate(input_ids, max_length=args.max_len_generate,
+                                     eos_token_id=tokenizer.sep_token_id,
+                                     decoder_start_token_id=tokenizer.cls_token_id,
+                                     **content)
+                    else:
+                        gen = model.generate(input_ids, max_length=args.max_len_generate,
+                                     eos_token_id=tokenizer.sep_token_id,
+                                     decoder_start_token_id=tokenizer.cls_token_id,
+                                     **content)
+                else:
+                    content['num_beams'] = 5
+                    gen = model.generate(input_ids, max_length=args.max_len_generate, **content)
                 gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
                 if is_mt5:
                     gen = [item.replace(' ', '') for item in gen]
@@ -369,17 +384,18 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
                 summaries.extend(title)
                 ground_truthes.extend(ground_truth)
             scores = calc_scores(gens, summaries, is_mt5)
-            ground_truth_scores = calc_scores(gens, ground_truthes, is_mt5, True)
             epoch_scores.append(scores)
-            ground_truth_epoch_scores.append(ground_truth_scores)
             utils.draw_score_curve(epoch_scores, './curve/k_fold{}_k{}_scores'.format(k_fold, k))
-            utils.draw_score_curve(ground_truth_epoch_scores, './curve/k_fold{}_k{}_ground_truth_scores'.format(k_fold, k))
             cider = scores['CIDEr'].item()
-            ground_truth_cider = ground_truth_scores['CIDEr'].item()
             print('k_fold{}_k{}_CIDEr = {}'.format(k_fold, k, cider))
-            print('k_fold{}_k{}_ground truth CIDEr = {}'.format(k_fold, k, ground_truth_cider))
             print("k_fold{}_k{}_Validation scores Loss: {}".format(k_fold, k, scores))
-            print("k_fold{}_k{}_Validation ground truth scores Loss: {}".format(k_fold, k, ground_truth_scores))
+            if not is_mt5:
+                ground_truth_scores = calc_scores(gens, ground_truthes, is_mt5, True)
+                ground_truth_epoch_scores.append(ground_truth_scores)
+                utils.draw_score_curve(ground_truth_epoch_scores, './curve/k_fold{}_k{}_ground_truth_scores'.format(k_fold, k))
+                ground_truth_cider = ground_truth_scores['CIDEr'].item()
+                print('k_fold{}_k{}_ground truth CIDEr = {}'.format(k_fold, k, ground_truth_cider))
+                print("k_fold{}_k{}_Validation ground truth scores Loss: {}".format(k_fold, k, ground_truth_scores))
             rouge_l = scores['ROUGE_L']
             print('k_fold{}_k{}_ROUGE_L = {}'.format(k_fold, k, rouge_l))
 
@@ -450,7 +466,7 @@ def init_argument():
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
     parser.add_argument('--batch_size', default=1, help='batch size')
-    parser.add_argument('--lr', default=2e-5, help='learning rate')
+    parser.add_argument('--lr', default=3e-5, help='learning rate')
     parser.add_argument('--data_parallel', default=False)
     parser.add_argument('--max_len', default=max_len, help='max length of inputs')
     parser.add_argument('--max_len_generate', default=64, help='max length of outputs')
@@ -459,6 +475,7 @@ def init_argument():
     parser.add_argument('--save_epoch_interval', type=int, default=9)
     parser.add_argument('--k_fold', type=int, default=1)
     parser.add_argument('--shutdown', type=str, default='True')
+    parser.add_argument('--use_model_loss', type=str, default='False')
 
     args = parser.parse_args()
     return args

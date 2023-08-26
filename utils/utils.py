@@ -86,21 +86,22 @@ def get_bz_max_len(data_type=''):
         return 16, 512
 
 
-def load_short_video_data(file_name, data_type, need_title=True, need_pid=False, no_ground_truth=True):
+def load_short_video_data(file_name, data_type, need_title=True, need_pid=False, use_gt=False):
     data = []
     key_photo_id = KEY_PHOTO_ID
     key_title = get_key_title(data_type)
     key_summary = KEY_SUMMARY
     key_ground_truth = 'ground_truth'
     df = pd.read_csv(file_name, sep='\t', encoding='utf-8')
-    if no_ground_truth:
-        df = df[[key_photo_id, key_title, key_summary]]
-    else:
-        df = df[[key_photo_id, key_title, key_summary, key_ground_truth]]
+    row_keys = [key_photo_id, key_title, key_summary]
+    if use_gt:
+        row_keys.append(key_ground_truth)
+    df = df[row_keys]
     for index, row in df.iterrows():
         photo_id = row[key_photo_id]
         summary = row[key_summary]
-        if not no_ground_truth:
+        # summary = 'summarize: ' + summary
+        if use_gt:
             ground_truth = row[key_ground_truth]
             ground_truth = eval(ground_truth)
             if need_title:
