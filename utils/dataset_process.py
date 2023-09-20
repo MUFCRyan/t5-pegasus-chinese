@@ -79,7 +79,6 @@ def split(file_path, key_title, max_len, name='short_video'):
     key_summary = utils.KEY_SUMMARY
     key_is_mmu = 'is_mmu'
     key_ground_truth = utils.KEY_GROUND_TRUTH
-    train_ratio, dev_ratio = 0.8, 0.1
     df = pd.read_csv(file_path, sep='\t', encoding='utf-8')
     keys = df.keys()
     print('ZFC df keys = {}'.format(keys))
@@ -100,19 +99,45 @@ def split(file_path, key_title, max_len, name='short_video'):
         else:
             full_data.append((photo_id, is_mmu, title, summary))
         print('ZFC split index = {}, photo_id = {}, title = {}, summary = {}'.format(index, photo_id, title, summary))
-    full_len = len(full_data)
-    random.shuffle(full_data)
-    train_len = int(full_len * train_ratio)
-    train_data = full_data[: train_len]
-    dev_len = int(full_len * dev_ratio) + train_len
-    dev_data = full_data[train_len: dev_len]
-    test_data = full_data[dev_len:]
+
+    if is_msrvtt:
+        train_data, dev_data, test_data = msrvtt_split_full_data(full_data)
+    else:
+        train_data, dev_data, test_data = default_split_full_data(full_data)
     all_data = [(train_data, 'train'), (dev_data, 'dev'), (test_data, 'test')]
     headers = [key_photo_id, key_is_mmu, key_title, key_summary]
     if is_msrvtt:
         headers.append(key_ground_truth)
     for (data, file_name) in all_data:
         save_data(save_dir, headers, data, file_name)
+
+
+def default_split_full_data(full_data):
+    full_len = len(full_data)
+    random.shuffle(full_data)
+    train_ratio, dev_ratio = 0.8, 0.1
+    train_len = int(full_len * train_ratio)
+    train_data = full_data[: train_len]
+    dev_len = int(full_len * dev_ratio) + train_len
+    dev_data = full_data[train_len: dev_len]
+    test_data = full_data[dev_len:]
+    return train_data, dev_data, test_data
+
+
+def msrvtt_split_full_data(full_data):
+    full_data_map = {}
+    for data in full_data:
+        (photo_id, is_mmu, title, summary, ground_truth) = data
+        num = int(str(photo_id).replace('video', ''))
+        full_data_map[num] = data
+    sorted_full_data_map = sorted(full_data_map)
+    full_data.clear()
+    for key in sorted_full_data_map:
+        full_data.append(full_data_map[key])
+    train_data = full_data[:6513]
+    dev_data = full_data[6513:6513 + 497]
+    test_data = full_data[6513 + 497:]
+    return train_data, dev_data, test_data
 
 
 def stat_summary_max_len(key_title, max_len):
@@ -170,10 +195,10 @@ if __name__ == '__main__':
     params = [
         # ('../resources/dataset.csv', utils.KEY_TITLE, 1536, 'short_video')
         # ('../resources/msrvtt_dataset.csv', utils.KEY_TITLE, 1536, 'msrvtt')
-        # ('../resources/msrvtt_dataset_32.csv', utils.KEY_TITLE, 1536, 'msrvtt_32')
+        ('../resources/msrvtt_dataset_32.csv', utils.KEY_TITLE, 1536, 'msrvtt_32')
     ]
     for (file_path, key_title, max_len, name) in params:
         split(file_path, key_title, max_len, name)
         # stat_summary_max_len(key_title, max_len)
 
-    generate_short_video_data_same_with_swinbert()
+    # generate_short_video_data_same_with_swinbert()
