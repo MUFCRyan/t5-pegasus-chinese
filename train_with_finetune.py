@@ -488,21 +488,22 @@ if __name__ == '__main__':
     print('shutdown = {}'.format(shutdown))
     try:
         is_mt5 = args.model_type == 'mt5'
-
         # step 2. prepare training data and validation data
         if is_mt5:
-            tokenizer = T5PegasusTokenizer.from_pretrained(args.pretrain_model)
+            tokenizer_config_path = './t5_pegasus_pretrain'
+            tokenizer = T5PegasusTokenizer.from_pretrained(tokenizer_config_path)
         else:
-            tokenizer = AutoTokenizer.from_pretrained(args.pretrain_model)
+            tokenizer_config_path = 'google/flan-t5-base'
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config_path)
         special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
         num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
 
         # step 3. load pretrain model
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if is_mt5:
-            model = MT5ForConditionalGeneration.from_pretrained(args.pretrain_model).to(device)
+            model = MT5ForConditionalGeneration.from_pretrained(tokenizer_config_path).to(device)
         else:
-            model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model).to(device)
+            model = AutoModelForSeq2SeqLM.from_pretrained(tokenizer_config_path).to(device)
         model.resize_token_embeddings(len(tokenizer))
         if args.data_parallel and torch.cuda.is_available():
             device_ids = range(torch.cuda.device_count())
