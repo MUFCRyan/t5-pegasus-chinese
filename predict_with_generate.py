@@ -318,7 +318,7 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
     print('Done!')
 
 
-def extract(test_data, model, mode, feat_type, is_mt5=True):
+def extract(test_data, model, mode, feat_type, is_mt5=True, num_frames=-1):
     with torch.no_grad():
         model.eval()
         if is_mt5:
@@ -326,6 +326,8 @@ def extract(test_data, model, mode, feat_type, is_mt5=True):
         else:
             root_dir = utils.SAVE_PATH_MSRVTT_FEATURES
         save_dir = root_dir + utils.FILE_SPLIT_SYMBOL + feat_type
+        if num_frames > 0:
+            save_dir += ('_' + str(num_frames))
         utils.check_mkdirs(save_dir)
         for index, (photo_id, feature) in enumerate(tqdm(test_data)):
             content = {k: v.to(device) for k, v in feature.items()}
@@ -366,6 +368,7 @@ def init_argument():
     parser.add_argument('--use_gt', type=str, default='False')
     parser.add_argument('--mode', default='temp')
     parser.add_argument('--model_type', default='mt5')
+    parser.add_argument('--num_frames', type=str, default=-1)
 
     args = parser.parse_args()
     return args
@@ -410,6 +413,8 @@ if __name__ == '__main__':
     is_extract = args.extract == str(True)
     use_gt = args.use_gt == str(True)
 
+    num_frames = int(args.num_frames)
+
     # step 2. prepare test data
     if is_mt5:
         tokenizer_config_path = './t5_pegasus_pretrain'
@@ -429,9 +434,9 @@ if __name__ == '__main__':
 
     if is_extract:
         curr_data = filter_data(test_data, utils.FEATURE_TYPE_SUMMARY, is_mt5)
-        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_SUMMARY, is_mt5)
+        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_SUMMARY, is_mt5, num_frames)
         curr_data = filter_data(test_data, utils.FEATURE_TYPE_CONTENT, is_mt5)
-        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_CONTENT, is_mt5)
+        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_CONTENT, is_mt5, num_frames)
     else:
         # step 4. predict
         res = []
