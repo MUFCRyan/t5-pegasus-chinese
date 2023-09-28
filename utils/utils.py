@@ -105,11 +105,12 @@ def load_short_video_data(file_name, data_type, need_title=True, need_pid=False,
             ground_truth = row[key_ground_truth]
             ground_truth = eval(ground_truth)
             if need_title:
-                title = row[key_title]
-                if need_pid:
-                    data.append((photo_id, title, summary, ground_truth))
-                else:
-                    data.append((title, summary, ground_truth))
+                for gt in ground_truth:
+                    title = gt
+                    if need_pid:
+                        data.append((photo_id, title, summary, ground_truth))
+                    else:
+                        data.append((title, summary, ground_truth))
             else:
                 if need_pid:
                     data.append((photo_id, summary, ground_truth))
