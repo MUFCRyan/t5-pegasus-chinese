@@ -510,7 +510,8 @@ if __name__ == '__main__':
             model = torch.nn.DataParallel(model, device_ids=device_ids)
 
         # step 4. finetune
-        adam = torch.optim.Adam(model.parameters(), lr=args.lr)
+        lr = float(args.lr)
+        adam = torch.optim.Adam(model.parameters(), lr=lr)
         train_model(model, adam, tokenizer, device, args, is_mt5)
     except Exception as e:
         name = 'train_with_finetune'
