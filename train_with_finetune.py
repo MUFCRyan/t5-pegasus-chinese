@@ -302,7 +302,8 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
         ground_truth_epoch_scores = []
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epoch, eta_min=0, last_epoch=-1)
         key_ground_truth = utils.KEY_GROUND_TRUTH
-        for epoch in range(total_epoch):
+        resume_epoch = int(args.resume_epoch)
+        for epoch in range(resume_epoch, total_epoch):
             model.train()  # 指明当前是训练阶段
             accu_train_loss = []
             mini_train_loss = []
@@ -462,6 +463,8 @@ def init_argument():
     parser.add_argument('--train_data', default='./dataset/short_video/train.csv')
     parser.add_argument('--dev_data', default='./dataset/short_video/dev.csv')
     parser.add_argument('--pretrain_model', default='./t5_pegasus_pretrain')
+    parser.add_argument('--resume_epoch', type=int, default=0)
+    parser.add_argument('--resume_model_path', default='')
     parser.add_argument('--model_dir', default='./saved_model')
     
     parser.add_argument('--num_epoch', default=20, help='number of epoch')
@@ -500,11 +503,17 @@ if __name__ == '__main__':
 
         # step 3. load pretrain model
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if is_mt5:
-            model = MT5ForConditionalGeneration.from_pretrained(tokenizer_config_path).to(device)
+
+        resume_epoch = int(args.resume_epoch)
+        resume_model_path = args.resume_model_path
+        if resume_epoch > 0 and len(resume_model_path) > 0 and os.path.exists(resume_model_path):
+            model = torch.load(resume_model_path, map_location=device)
         else:
-            model = AutoModelForSeq2SeqLM.from_pretrained(tokenizer_config_path).to(device)
-        model.resize_token_embeddings(len(tokenizer))
+            if is_mt5:
+                model = MT5ForConditionalGeneration.from_pretrained(tokenizer_config_path).to(device)
+            else:
+                model = AutoModelForSeq2SeqLM.from_pretrained(tokenizer_config_path).to(device)
+            model.resize_token_embeddings(len(tokenizer))
         if args.data_parallel and torch.cuda.is_available():
             device_ids = range(torch.cuda.device_count())
             model = torch.nn.DataParallel(model, device_ids=device_ids)
