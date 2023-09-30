@@ -83,7 +83,9 @@ def split(file_path, key_title, max_len, name='short_video'):
     keys = df.keys()
     print('ZFC df keys = {}'.format(keys))
     is_msrvtt = name.startswith('msrvtt')
-    if is_msrvtt:
+    is_msvd = name.startswith('msvd')
+    is_public_dataset = is_msrvtt or is_msvd
+    if is_public_dataset:
         df = df[[key_photo_id, key_is_mmu, key_title, key_summary, key_ground_truth]]
     else:
         df = df[[key_photo_id, key_is_mmu, key_title, key_summary]]
@@ -93,7 +95,7 @@ def split(file_path, key_title, max_len, name='short_video'):
         summary = row[key_summary]
         summary = rectify_summary_by_max_len(summary, max_len)
         is_mmu = row[key_is_mmu]
-        if is_msrvtt:
+        if is_public_dataset:
             ground_truth = row[key_ground_truth]
             full_data.append((photo_id, is_mmu, title, summary, ground_truth))
         else:
@@ -101,12 +103,14 @@ def split(file_path, key_title, max_len, name='short_video'):
         print('ZFC split index = {}, photo_id = {}, title = {}, summary = {}'.format(index, photo_id, title, summary))
 
     if is_msrvtt:
-        train_data, dev_data, test_data = msrvtt_split_full_data(full_data)
+        train_data, dev_data, test_data = public_dataset_split_full_data(full_data, 6513, 497, name)
+    elif is_msvd:
+        train_data, dev_data, test_data = public_dataset_split_full_data(full_data, 1200, 100, name)
     else:
         train_data, dev_data, test_data = default_split_full_data(full_data)
     all_data = [(train_data, 'train'), (dev_data, 'dev'), (test_data, 'test')]
     headers = [key_photo_id, key_is_mmu, key_title, key_summary]
-    if is_msrvtt:
+    if is_public_dataset:
         headers.append(key_ground_truth)
     for (data, file_name) in all_data:
         save_data(save_dir, headers, data, file_name)
@@ -124,19 +128,20 @@ def default_split_full_data(full_data):
     return train_data, dev_data, test_data
 
 
-def msrvtt_split_full_data(full_data):
-    full_data_map = {}
-    for data in full_data:
-        (photo_id, is_mmu, title, summary, ground_truth) = data
-        num = int(str(photo_id).replace('video', ''))
-        full_data_map[num] = data
-    sorted_full_data_map = sorted(full_data_map)
-    full_data.clear()
-    for key in sorted_full_data_map:
-        full_data.append(full_data_map[key])
-    train_data = full_data[:6513]
-    dev_data = full_data[6513:6513 + 497]
-    test_data = full_data[6513 + 497:]
+def public_dataset_split_full_data(full_data, train_len, dev_len, name):
+    if name.startswith('msrvtt'):
+        full_data_map = {}
+        for data in full_data:
+            (photo_id, is_mmu, title, summary, ground_truth) = data
+            num = int(str(photo_id).replace('video', ''))
+            full_data_map[num] = data
+        sorted_full_data_map = sorted(full_data_map)
+        full_data.clear()
+        for key in sorted_full_data_map:
+            full_data.append(full_data_map[key])
+    train_data = full_data[: train_len]
+    dev_data = full_data[train_len: train_len + dev_len]
+    test_data = full_data[train_len + dev_len:]
     return train_data, dev_data, test_data
 
 
@@ -195,7 +200,8 @@ if __name__ == '__main__':
     params = [
         # ('../resources/dataset.csv', utils.KEY_TITLE, 1536, 'short_video')
         # ('../resources/msrvtt_dataset.csv', utils.KEY_TITLE, 1536, 'msrvtt')
-        ('../resources/msrvtt_dataset_32.csv', utils.KEY_TITLE, 1536, 'msrvtt_32')
+        # ('../resources/msrvtt_dataset_32.csv', utils.KEY_TITLE, 1536, 'msrvtt_32')
+        ('../resources/msvd_dataset_32.csv', utils.KEY_TITLE, 1536, 'msvd_32')
     ]
     for (file_path, key_title, max_len, name) in params:
         split(file_path, key_title, max_len, name)
