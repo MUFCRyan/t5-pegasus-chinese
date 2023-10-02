@@ -282,7 +282,7 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
     has_ground_truth = False
     with open(predict_file, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter='\t')
-        writer.writerow((utils.KEY_PHOTO_ID, utils.KEY_TITLE, utils.KEY_SUMMARY))
+        writer.writerow((utils.KEY_PHOTO_ID, 'real_title', utils.KEY_TITLE, utils.KEY_SUMMARY))
         model.eval()
         ground_truthes = []
         for feature in tqdm(test_data):
@@ -292,6 +292,7 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
                 ground_truth = feature[utils.KEY_GROUND_TRUTH]
             else:
                 ground_truth = None
+            real_title = feature['title']
             raw_data = feature['raw_data']
             photo_ids = feature[utils.KEY_PHOTO_ID]
             photo_ids = {int(pid) if is_mt5 else pid for pid in photo_ids}
@@ -303,7 +304,7 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
             gen = tokenizer.batch_decode(gen, skip_special_tokens=True)
             if is_mt5:
                 gen = [item.replace(' ', '') for item in gen]
-            writer.writerows(zip(photo_ids, gen, raw_data))
+            writer.writerows(zip(photo_ids, real_title, gen, raw_data))
             gens.extend(gen)
             if 'title' in feature:
                 summaries.extend(feature['title'])
