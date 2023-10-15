@@ -180,7 +180,7 @@ def generate_short_video_data_same_with_swinbert():
         summary = row[key_summary]
         is_mmu = row[key_is_mmu]
         total_data[photo_id] = (title, summary, is_mmu)
-    save_dir = '../dataset/short_video_swinbert'
+    save_dir = '../dataset/shortvideo_swinbert'
     for data_type, data_path in swinbert_data_path:
         data = []
         with open(data_path, mode='r', encoding='utf-8') as f:
@@ -196,6 +196,52 @@ def generate_short_video_data_same_with_swinbert():
         save_data(save_dir, headers, data, data_type)
 
 
+def remove_token():
+    tokens = [
+        ('./dataset/shortvideo_swinbert/train.csv', './dataset/shortvideo_swinbert_lack_mos', 'train',
+         '[MOS]', '[MOE]'),
+        ('./dataset/shortvideo_swinbert/dev.csv', './dataset/shortvideo_swinbert_lack_mos', 'dev',
+         '[MOS]', '[MOE]'),
+        ('./dataset/shortvideo_swinbert/train.csv', './dataset/shortvideo_swinbert_lack_os', 'train',
+         '[OS]', '[OE]'),
+        ('./dataset/shortvideo_swinbert/dev.csv', './dataset/shortvideo_swinbert_lack_os', 'dev',
+         '[OS]', '[OE]'),
+        ('./dataset/shortvideo_swinbert_lack_mos/train.csv', './dataset/shortvideo_swinbert_lack_mos_os', 'train',
+         '[OS]', '[OE]'),
+        ('./dataset/shortvideo_swinbert_lack_mos/dev.csv', './dataset/shortvideo_swinbert_lack_mos_os', 'dev',
+         '[OS]', '[OE]')
+    ]
+    for (csv_path, save_path, data_type, start_token, end_token) in tokens:
+        real_remove_token(csv_path, save_path, data_type, start_token, end_token)
+
+
+def real_remove_token(csv_path, save_path, data_type, start_token, end_token):
+    if not os.path.exists(csv_path) or len(start_token) == 0 or len(end_token) == 0:
+        return
+    utils.check_mkdirs(save_path)
+    df = pd.read_csv(csv_path, sep='\t', encoding='utf-8')
+    key_photo_id = utils.KEY_PHOTO_ID
+    key_title = utils.KEY_TITLE
+    key_summary = utils.KEY_SUMMARY
+    key_is_mmu = 'is_mmu'
+    df = df[[key_photo_id, key_title, key_summary, key_is_mmu]]
+    headers = [key_photo_id, key_is_mmu, key_title, key_summary]
+    data = []
+    for index, row in df.iterrows():
+        photo_id = row[key_photo_id]
+        title = row[key_title]
+        summary = row[key_summary]
+        is_mmu = row[key_is_mmu]
+        if start_token in summary and end_token in summary:
+            start_splits = summary.split(start_token)
+            end_splits = start_splits[1].split(end_token)
+            summary = start_splits[0] + end_splits[1]
+        data.append((photo_id, is_mmu, title, summary))
+    headers = [key_photo_id, key_is_mmu, key_title, key_summary]
+    save_data(save_path, headers, data, data_type)
+
+
+
 if __name__ == '__main__':
     params = [
         # ('../resources/dataset.csv', utils.KEY_TITLE, 1536, 'short_video')
@@ -208,3 +254,4 @@ if __name__ == '__main__':
         # stat_summary_max_len(key_title, max_len)
 
     # generate_short_video_data_same_with_swinbert()
+    remove_token()

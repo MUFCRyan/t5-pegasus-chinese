@@ -83,6 +83,8 @@ def create_data(data, tokenizer, max_len=512, term='train', is_mt5=True):
     start = time.time_ns() / 1000000
     ret, flag = [], True
     for title, content, *ground_truth in tqdm(data):
+        if type(content) is float:
+            continue
         source = tokenizer.batch_encode_plus([content], max_length=max_len, truncation=True)
         text_ids = tokenizer.encode(content, max_length=max_len, truncation='only_first')
         if flag and term == 'train':
@@ -291,6 +293,7 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
 
     total_epoch = int(args.num_epoch)
     save_epoch_interval = int(args.save_epoch_interval)
+    curve_save_dir = './curve/{}'.format(args.save_tag)
     for k in range(k_fold):
         train_data = train_data_list[k]
         dev_data = dev_data_list[k]
@@ -337,9 +340,12 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
                     mini_train_loss.append(10)
                 if i % 100 == 0:
                     print("k_fold{}_k{}_Iter {}:  Training Loss: {}".format(k_fold, k, i, loss.item()))
-                    utils.draw_train_loss_curve(mini_train_loss, epoch, './curve/k_fold{}_k{}_train_loss'.format(k_fold, k))
-                    utils.draw_optimizer_lr_curve(optimizer_lrs, epoch, './curve/k_fold{}_k{}_optimizer_lr'.format(k_fold, k))
-                    utils.draw_scheduler_lr_curve(scheduler_lrs, epoch, './curve/k_fold{}_k{}_scheduler_lr'.format(k_fold, k))
+                    utils.draw_train_loss_curve(mini_train_loss, epoch,
+                                                '{}/k_fold{}_k{}_train_loss'.format(curve_save_dir, k_fold, k))
+                    utils.draw_optimizer_lr_curve(optimizer_lrs, epoch,
+                                                  '{}/k_fold{}_k{}_optimizer_lr'.format(curve_save_dir, k_fold, k))
+                    utils.draw_scheduler_lr_curve(scheduler_lrs, epoch,
+                                                  '{}/k_fold{}_k{}_scheduler_lr'.format(curve_save_dir, k_fold, k))
                 optimizer_lrs.append(optimizer.state_dict()['param_groups'][0]['lr'])
                 scheduler_lrs.append(lr_scheduler.get_last_lr())
                 loss.backward()  # 开启后向传播
@@ -386,14 +392,14 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
                 ground_truthes.extend(ground_truth)
             scores = calc_scores(gens, summaries, is_mt5)
             epoch_scores.append(scores)
-            utils.draw_score_curve(epoch_scores, './curve/k_fold{}_k{}_scores'.format(k_fold, k))
+            utils.draw_score_curve(epoch_scores, '{}/k_fold{}_k{}_scores'.format(curve_save_dir, k_fold, k))
             cider = scores['CIDEr'].item()
             print('k_fold{}_k{}_CIDEr = {}'.format(k_fold, k, cider))
             print("k_fold{}_k{}_Validation scores Loss: {}".format(k_fold, k, scores))
             if not is_mt5:
                 ground_truth_scores = calc_scores(gens, ground_truthes, is_mt5, True)
                 ground_truth_epoch_scores.append(ground_truth_scores)
-                utils.draw_score_curve(ground_truth_epoch_scores, './curve/k_fold{}_k{}_ground_truth_scores'.format(k_fold, k))
+                utils.draw_score_curve(ground_truth_epoch_scores, '{}/k_fold{}_k{}_ground_truth_scores'.format(curve_save_dir, k_fold, k))
                 ground_truth_cider = ground_truth_scores['CIDEr'].item()
                 print('k_fold{}_k{}_ground truth CIDEr = {}'.format(k_fold, k, ground_truth_cider))
                 print("k_fold{}_k{}_Validation ground truth scores Loss: {}".format(k_fold, k, ground_truth_scores))
@@ -441,15 +447,14 @@ def train_model(model, optimizer, tokenizer, device, args, is_mt5):
             info = 'k_fold={} k={} epoch={}, cider={}, rouge_l={}'.format(k_fold, k, epoch, cider, rouge_l)
             epoch_plus = epoch + 1
             if epoch_plus % save_epoch_interval == 0 or epoch_plus == total_epoch:
-                utils.check_mkdirs('./checkpoint')
-                torch.save(model, './checkpoint/k_fold{}_k{}_{}_{}'.format(k_fold, k, model_name, str(epoch)))
+                utils.check_mkdirs('{}/checkpoint'.format(curve_save_dir))
+                torch.save(model, '{}/checkpoint/k_fold{}_k{}_{}_{}'.format(curve_save_dir, k_fold, k, model_name, str(epoch)))
                 utils.send_wechat_msg('train_with_finetune save_model', info)
     
             if epoch % 4 == 0:
                 utils.send_wechat_msg('train_with_finetune', info)
-            utils.draw_epoch_loss_curve(epoch_loss, './curve/k_fold{}_k{}_epoch_loss'.format(k_fold, k))
-        utils.check_mkdirs('./TrainLossScore')
-        utils.save_msg_to_local(json.dumps(total_loss), './TrainLossScore/k_fold{}_k{}_LossScore.txt'.format(k_fold, k))
+            utils.draw_epoch_loss_curve(epoch_loss, '{}/k_fold{}_k{}_epoch_loss'.format(curve_save_dir, k_fold, k))
+        utils.save_msg_to_local(json.dumps(total_loss), '{}/k_fold{}_k{}_LossScore.txt'.format(curve_save_dir, k_fold, k))
         utils.send_wechat_msg('train_with_finetune', 'train_model k_fold{}_k{} finished'.format(k_fold, k))
     utils.check_shutdown()
 
@@ -479,9 +484,45 @@ def init_argument():
     parser.add_argument('--k_fold', type=int, default=1)
     parser.add_argument('--shutdown', type=str, default='True')
     parser.add_argument('--use_model_loss', type=str, default='False')
+    parser.add_argument('--save_tag', type=str, default='normal')
 
     args = parser.parse_args()
     return args
+
+
+def real_process(args):
+    is_mt5 = args.model_type == 'mt5'
+    # step 2. prepare training data and validation data
+    if is_mt5:
+        tokenizer_config_path = './t5_pegasus_pretrain'
+        tokenizer = T5PegasusTokenizer.from_pretrained(tokenizer_config_path)
+    else:
+        tokenizer_config_path = 'google/flan-t5-base'
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_config_path)
+    special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
+    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+
+    # step 3. load pretrain model
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    resume_epoch = int(args.resume_epoch)
+    resume_model_path = args.resume_model_path
+    if resume_epoch > 0 and len(resume_model_path) > 0 and os.path.exists(resume_model_path):
+        model = torch.load(resume_model_path, map_location=device)
+    else:
+        if is_mt5:
+            model = MT5ForConditionalGeneration.from_pretrained(tokenizer_config_path).to(device)
+        else:
+            model = AutoModelForSeq2SeqLM.from_pretrained(tokenizer_config_path).to(device)
+        model.resize_token_embeddings(len(tokenizer))
+    if args.data_parallel and torch.cuda.is_available():
+        device_ids = range(torch.cuda.device_count())
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
+
+    # step 4. finetune
+    lr = float(args.lr)
+    adam = torch.optim.Adam(model.parameters(), lr=lr)
+    train_model(model, adam, tokenizer, device, args, is_mt5)
 
 
 if __name__ == '__main__':
@@ -489,45 +530,17 @@ if __name__ == '__main__':
     args = init_argument()
     shutdown = args.shutdown == str(True)
     print('shutdown = {}'.format(shutdown))
-    try:
-        is_mt5 = args.model_type == 'mt5'
-        # step 2. prepare training data and validation data
-        if is_mt5:
-            tokenizer_config_path = './t5_pegasus_pretrain'
-            tokenizer = T5PegasusTokenizer.from_pretrained(tokenizer_config_path)
-        else:
-            tokenizer_config_path = 'google/flan-t5-base'
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config_path)
-        special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
-        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-
-        # step 3. load pretrain model
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-        resume_epoch = int(args.resume_epoch)
-        resume_model_path = args.resume_model_path
-        if resume_epoch > 0 and len(resume_model_path) > 0 and os.path.exists(resume_model_path):
-            model = torch.load(resume_model_path, map_location=device)
-        else:
-            if is_mt5:
-                model = MT5ForConditionalGeneration.from_pretrained(tokenizer_config_path).to(device)
-            else:
-                model = AutoModelForSeq2SeqLM.from_pretrained(tokenizer_config_path).to(device)
-            model.resize_token_embeddings(len(tokenizer))
-        if args.data_parallel and torch.cuda.is_available():
-            device_ids = range(torch.cuda.device_count())
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
-
-        # step 4. finetune
-        lr = float(args.lr)
-        adam = torch.optim.Adam(model.parameters(), lr=lr)
-        train_model(model, adam, tokenizer, device, args, is_mt5)
-    except Exception as e:
-        name = 'train_with_finetune'
-        msg = 'exception: {}'.format(str(e))
-        print(name + ' ' + msg)
-        utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
-        utils.send_wechat_msg(name, msg)
-        if shutdown:
-            utils.check_shutdown()
+    if utils.is_linux():
+        try:
+            real_process(args)
+        except Exception as e:
+            name = 'train_with_finetune'
+            msg = 'exception: {}'.format(str(e))
+            print(name + ' ' + msg)
+            utils.save_msg_to_local(name + ' ' + msg, 'TrainFinetuneException.txt')
+            utils.send_wechat_msg(name, msg)
+            if shutdown:
+                utils.check_shutdown()
+    else:
+        real_process(args)
 
