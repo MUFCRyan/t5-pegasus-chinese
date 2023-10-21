@@ -1,11 +1,13 @@
 import math
 import time
 
-from tqdm import tqdm
-from transformers import MT5ForConditionalGeneration, AutoTokenizer
+import cv2
 import jieba
-from transformers import BertTokenizer, BatchEncoding
 import torch
+from PIL import Image
+from tqdm import tqdm
+from transformers import AutoTokenizer
+from transformers import BertTokenizer
 
 from eval.score import calc_scores
 from utils import utils
@@ -24,10 +26,11 @@ import re
 import os
 import csv
 import argparse
-from multiprocessing import Pool, Process
+from multiprocessing import Pool
 import pandas as pd
 import numpy as np
 import rouge
+import PySimpleGUI as sg
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -280,6 +283,7 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
     utils.check_mkdirs(predict_dir)
     predict_file = predict_dir + utils.FILE_SPLIT_SYMBOL + mode + utils.SUFFIX_CSV
     has_ground_truth = False
+    gen_for_one = args.gen_for_one == str(True)
     with open(predict_file, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter='\t')
         writer.writerow((utils.KEY_PHOTO_ID, 'real_title', utils.KEY_TITLE, utils.KEY_SUMMARY))
@@ -310,13 +314,14 @@ def generate_summary(test_data, model, tokenizer, args, is_mt5=True, use_gt=Fals
                 summaries.extend(feature['title'])
             if has_ground_truth and ground_truth is not None:
                 ground_truthes.extend(ground_truth)
-    if len(summaries) > 0:
+    if len(summaries) and not gen_for_one > 0:
         scores = calc_scores(gens, summaries, is_mt5)
         print('scores = {}'.format(scores))
         if has_ground_truth and len(ground_truthes) > 0:
             scores = calc_scores(gens, ground_truthes, is_mt5, is_ground_truth=True)
             print('ground_truth scores = {}'.format(scores))
     print('Done!')
+    return gens, summaries
 
 
 def extract(test_data, model, mode, feat_type, is_mt5=True, num_frames=-1):
@@ -367,6 +372,7 @@ def init_argument():
     parser.add_argument('--use_multiprocess', default=False, action='store_true')
     parser.add_argument('--extract', type=str, default='False', help='if use extract text features')
     parser.add_argument('--use_gt', type=str, default='False')
+    parser.add_argument('--gen_for_one', type=str, default='False')
     parser.add_argument('--mode', default='temp')
     parser.add_argument('--model_type', default='mt5')
     parser.add_argument('--num_frames', type=str, default=-1)
@@ -405,6 +411,132 @@ def filter_data(test_data, feat_type, is_mt5=True):
     return data_list
 
 
+def load_info(csv_path):
+    infos = {}
+    key_photo_id = utils.KEY_PHOTO_ID
+    key_is_mmu = utils.KEY_IS_MMU
+    key_title = utils.get_key_title(utils.DATA_TYPE_PURE)
+    key_summary = utils.KEY_SUMMARY
+    df = pd.read_csv(csv_path, sep='\t', encoding='utf-8')
+    row_keys = [key_photo_id, key_is_mmu, key_title, key_summary]
+    df = df[row_keys]
+    for index, row in df.iterrows():
+        photo_id = row[key_photo_id]
+        is_mmu = row[key_is_mmu]
+        title = row[key_title]
+        summary = row[key_summary]
+        infos[photo_id] = (photo_id, is_mmu, title, summary)
+    return infos, row_keys
+
+
+def save_video_info(infos, headers, photo_id, save_dir):
+    info = infos[photo_id]
+    save_file_path = save_dir + utils.FILE_SPLIT_SYMBOL + str(photo_id) + '.csv'
+    with open(save_file_path, 'w', encoding='utf-8', newline='') as csv_file:
+        writer = csv.writer(csv_file, delimiter='\t')
+        writer.writerow(headers)
+        writer.writerow(info)
+    return info
+
+
+def get_image(image_path, origin_size, encode_format='JPEG'):
+    image = Image.open(image_path)
+    new_im = image.resize(origin_size, Image.ANTIALIAS)
+    return new_im
+
+
+def loop_gen_for_one(model, tokenizer, args, is_mt5=True, use_gt=False):
+    # test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract, use_gt=use_gt)
+    all_data_path = './dataset/short_video/all.csv'
+    all_infos, headers = load_info(all_data_path)
+    temp_path = './temp'
+    utils.check_mkdirs(temp_path)
+
+    sg.theme('BluePurple')
+    bg_color = '#FFFFFF'
+    text_color = '#000000'
+    font = ('Arial Bold', 20)
+    expand_x = False
+    justification = 'center'
+    preview_size = (360, 640)
+
+    preview = sg.Image(size=preview_size, background_color=bg_color)
+
+    key_file_path_text = 'KEY_SELECT_VIDEO'
+    file_path_text = sg.InputText(size=(20, 1), disabled=True, background_color=bg_color, enable_events=True,
+                                  key=key_file_path_text, font=('Arial Bold', 10), expand_x=expand_x,
+                                  justification=justification)
+    file_browse_key = 'VIDEO_PATH'
+    file_browser = sg.FileBrowse('选择视频', key=file_browse_key, enable_events=True, file_types=[("Video", "*.mp4")])
+
+    gen_key = 'KEY_GENERATE'
+    gen_btn = sg.Button('生成', key=gen_key, size=(10, 3), font=font, expand_x=expand_x)
+
+    text_origin_title = sg.Text('原始的标题：', text_color=text_color, font=font, expand_x=expand_x,
+                                justification=justification)
+    text_origin_key = 'KEY_TEXT_ORIGIN'
+    text_origin = sg.Text(key=text_origin_key, size=(30, 2), background_color=bg_color, text_color=text_color,
+                          font=font, expand_x=expand_x, justification=justification)
+
+    text_result_title = sg.Text('生成的标题：', font=font, expand_x=expand_x, justification=justification)
+    text_result_key = 'KEY_TEXT_RESULT'
+    text_result = sg.Text(key=text_result_key, size=(30, 10), background_color=bg_color,
+                          font=font, expand_x=expand_x, justification=justification)
+
+    right_column = sg.Column([
+        [file_path_text, file_browser],
+        [gen_btn],
+        [text_origin_title], [text_origin],
+        [text_result_title], [text_result]
+    ])
+
+    layout = [[preview, right_column]]
+    window = sg.Window('短视频标题生成', layout)
+
+    video_cap = None
+
+    frame_ms = 10000
+    while True:
+        event, value = window.read(timeout=frame_ms)
+        print('event = {}, value = {}'.format(event, value))
+        if event is None:
+            break
+        else:
+            if event == key_file_path_text:
+                if value is not None and file_browse_key in value.keys():
+                    video_path = value[file_browse_key]
+                    (_, file_name_ext) = os.path.split(video_path)
+                    (photo_id, _) = os.path.splitext(file_name_ext)
+                    (photo_id, is_mmu, title, summary) = all_infos[int(photo_id)]
+                    text_origin.update(title)
+                    video_cap = cv2.VideoCapture(video_path)
+                    frame_ms = int(1000 / video_cap.get(cv2.CAP_PROP_FPS))
+                    text_result.update('')
+                else:
+                    print('视频文件无效，请重新选择')
+            elif event == gen_key:
+                if value is not None and file_browse_key in value.keys():
+                    video_path = value[file_browse_key]
+                    (_, file_name_ext) = os.path.split(video_path)
+                    (photo_id, _) = os.path.splitext(file_name_ext)
+                    save_path = temp_path + utils.FILE_SPLIT_SYMBOL + photo_id + utils.SUFFIX_CSV
+                    save_video_info(all_infos, headers, int(photo_id), temp_path)
+                    args.test_data = save_path
+                    test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract,
+                                             use_gt=use_gt)
+                    gens, _ = generate_summary(test_data, model, tokenizer, args, is_mt5=is_mt5, use_gt=use_gt)
+                    text_result.update(gens[0])
+                else:
+                    print('视频文件无效，请重新选择')
+        if video_cap is not None:
+            ret, frame = video_cap.read()
+            if ret:
+                resized_frame = cv2.resize(frame, preview_size)
+                result = cv2.imencode('.png', resized_frame)
+                image_encode = result[1]
+                image_bytes = image_encode.tobytes()
+                preview.update(data=image_bytes)
+
 
 if __name__ == '__main__':
     
@@ -413,6 +545,7 @@ if __name__ == '__main__':
     is_mt5 = args.model_type == 'mt5'
     is_extract = args.extract == str(True)
     use_gt = args.use_gt == str(True)
+    gen_for_one = args.gen_for_one == str(True)
 
     num_frames = int(args.num_frames)
 
@@ -427,29 +560,32 @@ if __name__ == '__main__':
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_config_path)
     special_tokens_dict = {'additional_special_tokens': ['[OS]', '[OE]', '[MOS]', '[MOE]', '[ICS]', '[ICE]']}
     num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-    test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract, use_gt=use_gt)
-    
+
     # step 3. load finetuned model
     model = torch.load(args.model, map_location=device)
     model.resize_token_embeddings(len(tokenizer))
 
-    if is_extract:
-        curr_data = filter_data(test_data, utils.FEATURE_TYPE_SUMMARY, is_mt5)
-        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_SUMMARY, is_mt5, num_frames)
-        curr_data = filter_data(test_data, utils.FEATURE_TYPE_CONTENT, is_mt5)
-        extract(curr_data, model, args.mode, utils.FEATURE_TYPE_CONTENT, is_mt5, num_frames)
+    if gen_for_one:
+        loop_gen_for_one(model, tokenizer, args, is_mt5=is_mt5, use_gt=use_gt)
     else:
-        # step 4. predict
-        res = []
-        if args.use_multiprocess and device == 'cpu':
-            print('Parent process %s.' % os.getpid())
-            p = Pool(2)
-            res = p.map_async(generate_multiprocess, test_data, chunksize=2).get()
-            print('Waiting for all subprocesses done...')
-            p.close()
-            p.join()
-            res = pd.DataFrame([item for batch in res for item in batch])
-            res.to_csv(args.result_file, index=False, header=False, encoding='utf-8')
-            print('Done!')
+        test_data = prepare_data(args, tokenizer, utils.DATA_TYPE_PURE, is_extract=is_extract, use_gt=use_gt)
+        if is_extract:
+            curr_data = filter_data(test_data, utils.FEATURE_TYPE_SUMMARY, is_mt5)
+            extract(curr_data, model, args.mode, utils.FEATURE_TYPE_SUMMARY, is_mt5, num_frames)
+            curr_data = filter_data(test_data, utils.FEATURE_TYPE_CONTENT, is_mt5)
+            extract(curr_data, model, args.mode, utils.FEATURE_TYPE_CONTENT, is_mt5, num_frames)
         else:
-            generate_summary(test_data, model, tokenizer, args, is_mt5=is_mt5, use_gt=use_gt)
+            # step 4. predict
+            res = []
+            if args.use_multiprocess and device == 'cpu':
+                print('Parent process %s.' % os.getpid())
+                p = Pool(2)
+                res = p.map_async(generate_multiprocess, test_data, chunksize=2).get()
+                print('Waiting for all subprocesses done...')
+                p.close()
+                p.join()
+                res = pd.DataFrame([item for batch in res for item in batch])
+                res.to_csv(args.result_file, index=False, header=False, encoding='utf-8')
+                print('Done!')
+            else:
+                generate_summary(test_data, model, tokenizer, args, is_mt5=is_mt5, use_gt=use_gt)
